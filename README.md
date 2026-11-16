@@ -14,7 +14,7 @@
 ![GUI](https://img.shields.io/badge/GUI-Tauri%202-blue)
 ![License](https://img.shields.io/badge/license-PolyForm--NC%201.0.0-blue)
 
-[设计文档](docs/design.md) · [CLI 使用指南](docs/cli-guide.md) · [路线图](#️-路线图) · [开发](#️-开发)
+[设计文档](docs/design.md) · [CLI 使用指南](docs/cli-guide.md) · [Agent Skill](#-agent-skillai-智能体集成) · [路线图](#️-路线图) · [开发](#️-开发)
 
 </div>
 
@@ -71,6 +71,42 @@ import   Import records from a JSON file
 中文速览：`makara init [owner/repo]` 初始化（交互选择是否同步 GitHub，默认仓库名 makara-vault；指定地址则跳过询问） · `makara add` 第一步上下键选协议，选 Custom 才填自定义标签 · `makara key <名|#序号|id>` 复制完整 key · `makara show <名|#序号|id> --copy` 查看详情并复制 · `makara delete` 墓碑删除 · `makara lock` 锁定 · `makara remote set/unset` 绑定或解绑。
 
 </details>
+
+## 🤖 Agent Skill（AI 智能体集成）
+
+Makara CLI 天然适合 AI 智能体操作：key 在任何输出中都是掩码、完整 key 只进剪贴板、`add` 支持全参数非交互执行。仓库提供现成的 [Agent Skill](skills/makara/SKILL.md)——一份教 AI 编程工具（Claude Code、ZCode 等）安全使用 `makara` 的说明书，装好后直接对智能体说「查一下我的 OpenAI key 还有没有效」「把主力 key 配到这个项目」即可。
+
+### 安装方式一：手动
+
+```bash
+mkdir -p ~/.claude/skills/makara
+curl -fsSL https://raw.githubusercontent.com/Haaaatcher/Makara/main/skills/makara/SKILL.md \
+  -o ~/.claude/skills/makara/SKILL.md
+```
+
+各工具的技能目录不同，把上面的目标路径换成下表对应位置即可：
+
+| 工具 | 个人全局（所有项目可用） | 项目级（仅当前仓库） |
+|---|---|---|
+| Claude Code | `~/.claude/skills/` | `.claude/skills/` |
+| ZCode | `~/.zcode/skills/`（或 `~/.agents/skills/`） | `.zcode/skills/`（或 `.agents/skills/`） |
+| 通用（多家工具共享） | `~/.agents/skills/` | `.agents/skills/` |
+
+> [!NOTE]
+> 装在项目级目录并随仓库提交后，团队成员打开仓库即自动获得该 skill。
+
+### 安装方式二：让 AI 智能体来装
+
+把下面这段提示词发给你正在用的 AI 智能体即可：
+
+```text
+请帮我安装 Makara 的 agent skill：
+1. 下载 https://raw.githubusercontent.com/Haaaatcher/Makara/main/skills/makara/SKILL.md
+2. 保存到你的技能目录下的 makara/SKILL.md（目录不存在则创建）：Claude Code 用 ~/.claude/skills/，ZCode 用 ~/.zcode/skills/，其他工具按你的 skill 发现约定选择个人级目录
+3. 装好后告诉我最终路径，并确认这个 skill 已能被你发现
+```
+
+装好后重开会话生效。
 
 ## ❓ 常见问题
 
