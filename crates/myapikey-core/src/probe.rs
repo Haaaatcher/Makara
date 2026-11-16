@@ -254,24 +254,41 @@ pub fn probe_all_with(
 ///
 /// 返回列表按服务端顺序保留、去重去空；数量上限 128（防御异常服务端
 /// 返回海量条目撑爆 vault）。
+/// 拉取 list-models（兼容包装）：成功返回模型列表，失败返回 `None`。
+/// 需要失败原因的调用方（CLI 交互降级提示）用 [`fetch_models_with_reason`]。
 pub fn fetch_models(record: &Record) -> Option<Vec<String>> {
-    let result = fetch_models_inner(record);
+    let result = fetch_models_with_reason(record);
     crate::log::debug(
         "probe",
         &format!(
-            "fetch models {}: {} items",
+            "fetch models {}: {}",
             record.name,
-            result.as_ref().map_or(0, Vec::len)
+            match &result {
+                Ok(v) => format!("{} items", v.len()),
+                Err(e) => format!("failed ({e})"),
+            }
         ),
     );
-    result
+    result.ok()
 }
 
-fn fetch_models_inner(record: &Record) -> Option<Vec<String>> {
+/// 拉取 list-models 并携带失败原因：成功返回模型列表；失败返回人读的
+/// 原因（网络错误 / HTTP 状态码 / 协议无已知端点 / 服务端返回空列表）。
+///
+/// 与 key 校验（[`check_key`]）共用同一个请求构造：Responses / Chat
+/// Completions 走 `{base}/models` 与 `{base}/v1/models` 候选（404 换
+/// 下一个），Messages / Text Completions 走 `{base}/v1/models`。
+///
+/// # Errors
+/// 失败原因以人读字符串返回（不做结构化错误类型——调用方是交互降级
+/// 提示，只需展示）：网络错误、非 200 的 HTTP 状态码（含 key/权限提示）、
+/// Custom 协议无已知端点、服务端响应解析后为空列表。
+pub fn fetch_models_with_reason(record: &Record) -> Result<Vec<String>, String> {
     let body = match &record.protocol {
         // Responses / Chat Completions 共享同一套 models 端点与认证头
         Protocol::OpenAi | Protocol::OpenAiChat => {
             let mut got = None;
+            let mut last_err = String::from("no /models endpoint responded");
             for url in openai_candidate_urls(&record.base_url) {
                 let mut req = client()
                     .get(&url)
@@ -279,18 +296,29 @@ fn fetch_models_inner(record: &Record) -> Option<Vec<String>> {
                 for (k, v) in &record.extra_headers {
                     req = req.header(k, v);
                 }
-                if let Ok(resp) = req.send() {
-                    if resp.status().as_u16() == 404 {
-                        continue; // 这个 URL 形态不对，换下一个候选
+                match req.send() {
+                    Ok(resp) => {
+                        let code = resp.status().as_u16();
+                        if code == 404 {
+                            // 这个 URL 形态不对，换下一个候选
+                            last_err = format!("HTTP 404 at {url}");
+                            continue;
+                        }
+                        if resp.status().is_success() {
+                            got = resp.text().ok();
+                        } else {
+                            // 非 200 且非 404：key/权限问题，列表拿不到
+                            last_err =
+                                format!("HTTP {code} (check the API key or endpoint permission)");
+                        }
+                        break;
                     }
-                    if resp.status().is_success() {
-                        got = resp.text().ok();
+                    Err(e) => {
+                        last_err = format!("network error: {e}");
                     }
-                    // 非 200 且非 404：key/权限问题，列表拿不到
-                    break;
                 }
             }
-            got
+            got.ok_or(last_err)?
         }
         // Messages / Text Completions 共享同一套 models 端点与认证头
         Protocol::Anthropic | Protocol::AnthropicComplete => {
@@ -303,15 +331,26 @@ fn fetch_models_inner(record: &Record) -> Option<Vec<String>> {
                 req = req.header(k, v);
             }
             match req.send() {
-                Ok(resp) if resp.status().is_success() => resp.text().ok(),
-                _ => None,
+                Ok(resp) if resp.status().is_success() => resp
+                    .text()
+                    .ok()
+                    .ok_or_else(|| "failed to read response body".to_string())?,
+                Ok(resp) => Err(format!(
+                    "HTTP {} (check the API key or endpoint permission)",
+                    resp.status().as_u16()
+                ))?,
+                Err(e) => Err(format!("network error: {e}"))?,
             }
         }
         // 自定义协议没有已知的列表端点约定（与探测一致）
-        Protocol::Custom { .. } => None,
-    }?;
+        Protocol::Custom { .. } => {
+            return Err("custom protocol has no known models endpoint".to_string());
+        }
+    };
     let models = parse_models_body(&body);
-    (!models.is_empty()).then_some(models)
+    (!models.is_empty())
+        .then_some(models)
+        .ok_or_else(|| "endpoint responded but returned no models".to_string())
 }
 
 /// 解析 list-models 响应体（纯函数，可测试）：`{"data": [{"id": …}, …]}`。

@@ -177,6 +177,10 @@ pub struct RecordView {
     /// 模型列表（2026-10-27 增补，可空）。
     pub models: Vec<String>,
     pub notes: Option<String>,
+    /// 最近更新时刻。必须携带时区标记的 RFC3339 UTC（`...Z`）：前端
+    /// `new Date` 会把无时区串按本地时区解析，naive UTC 串会让卡片的
+    /// 相对时间整体偏移时区差（东八区 +8h，2026-11-16 决议）。
+    /// 同一形态也保证按字符串排序（`updated_at.cmp`）与按时间排序一致。
     pub updated_at: String,
     /// 最近一次校验结论（本机缓存；`None` = 从未校验）。
     pub check: Option<CheckView>,
@@ -507,7 +511,10 @@ fn to_view(r: &Record, cache: &CheckCache) -> RecordView {
         masked_key: r.masked_key(),
         models: r.models.clone(),
         notes: r.notes.clone(),
-        updated_at: r.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        // RFC3339 UTC（毫秒 + Z），与前端 mock 的 toISOString() 同形态
+        updated_at: r
+            .updated_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         check,
     }
 }
@@ -2303,5 +2310,34 @@ mod tests {
             "错误应说明单机模式无远端：{err}"
         );
         assert_eq!(list_view(&sh).unwrap().len(), 1, "本地数据不受影响");
+    }
+
+    /// 视图时间戳回归（2026-11-16 用户真机命中）：`updated_at` 必须是带
+    /// 时区标记的 RFC3339 UTC（`Z` 结尾）——前端 `new Date` 把无时区串按
+    /// 本地时区解析，naive UTC 串会让卡片相对时间整体偏移时区差（东八区
+    /// 即 +8h，表现为刚保存的记录显示「8 小时前」）。
+    #[test]
+    fn to_view_updated_at_is_rfc3339_utc() {
+        let sh = shared("tz-guard");
+        let rec = Record::new(
+            "tz-guard".into(),
+            Protocol::OpenAi,
+            "https://example.com/v1".into(),
+            "sk-test-tz-guard".into(),
+        );
+        let view = to_view(&rec, &CheckCache::load(&sh.dirs));
+        assert!(
+            view.updated_at.ends_with('Z'),
+            "updated_at 必须以 Z 结尾标记 UTC：{}",
+            view.updated_at
+        );
+        let parsed = chrono::DateTime::parse_from_rfc3339(&view.updated_at)
+            .expect("updated_at 必须是合法 RFC3339");
+        // Millis 精度是序列化的有意截断：往返按毫秒粒度对齐
+        assert_eq!(
+            parsed.timestamp_millis(),
+            rec.updated_at.timestamp_millis(),
+            "序列化往返按毫秒粒度必须同一时刻"
+        );
     }
 }

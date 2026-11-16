@@ -597,8 +597,21 @@ pub fn show(target: &str, copy: bool) -> Result<()> {
         println!("Notes      : {n}");
     }
     println!("id         : {}", r.id);
-    println!("Created    : {}", r.created_at.format("%Y-%m-%d %H:%M"));
-    println!("Updated    : {}", r.updated_at.format("%Y-%m-%d %H:%M"));
+    // Created/Updated 转本地时区再显示：字段存储是 UTC，直接 format 会把
+    // UTC 时刻无标记地印出来，东八区用户会误读成早 8 小时（2026-11-16 决议，
+    // 与 GUI 卡片时间语义一致：存储一律 UTC，展示层负责本地化）
+    println!(
+        "Created    : {}",
+        r.created_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+    );
+    println!(
+        "Updated    : {}",
+        r.updated_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+    );
 
     if copy {
         copy_to_clipboard(&r.api_key);
@@ -1578,22 +1591,29 @@ fn fetch_models_interactive(
     );
     // 网络拉取，同样给等待指示
     let spin = prompt::wait_spinner("Fetching model list from the endpoint…");
-    let fetched = probe::fetch_models(&tmp);
+    let fetched = probe::fetch_models_with_reason(&tmp);
     drop(spin);
-    if let Some(fetched) = fetched {
-        // 展示：≤8 个全列；更多只列前 8 + 总数（中转端可能返回上百个）
-        let preview = if fetched.len() <= 8 {
-            fetched.join(", ")
-        } else {
-            format!(
-                "{}, … and {} more",
-                fetched[..8].join(", "),
-                fetched.len() - 8
-            )
-        };
-        println!("Fetched {} models: {preview}", fetched.len());
-        // 选择器：小清单多选勾选，大清单模糊搜索逐个添加
-        return prompt::pick_models(&fetched);
+    match fetched {
+        Ok(fetched) => {
+            // 展示：≤8 个全列；更多只列前 8 + 总数（中转端可能返回上百个）
+            let preview = if fetched.len() <= 8 {
+                fetched.join(", ")
+            } else {
+                format!(
+                    "{}, … and {} more",
+                    fetched[..8].join(", "),
+                    fetched.len() - 8
+                )
+            };
+            println!("Fetched {} models: {preview}", fetched.len());
+            // 选择器：小清单多选勾选，大清单模糊搜索逐个添加
+            return prompt::pick_models(&fetched);
+        }
+        // D5 的降级语义保留，但失败原因不再静默——现象 + 出路一行说清
+        // （2026-11-13 用户实测：静默降级让人不知道为什么只能手填）
+        Err(reason) => {
+            prompt::warn(&format!("Model list fetch failed: {reason}"));
+        }
     }
     // 回落：常规手输（Enter 跳过）
     let raw = prompt_line("Models (comma-separated, Enter to skip): ");

@@ -399,7 +399,9 @@ pub fn prompt_http_url(label: &str) -> Result<String> {
 /// 全局交互主题：所有 dialoguer 组件共用一份 ColorfulTheme——统一的
 /// `? … ›` 进行时样式与 `✔ 字段 · 值` 完成痕迹，让逐项询问呈现连续的
 /// 填表视觉（字段名 · 填入值 一行一条）。每次新建主题等价但为一致性与
-/// 未来定制留单一入口。
+/// 未来定制留单一入口。（2026-11-13 用户反馈 prompt 前缀 `?` 视觉偏弱
+/// ——改 `›` 的定制需要显式引入 console crate（dialoguer 的既有传递
+/// 依赖，零体积增量），获批后实施。）
 fn theme() -> &'static ColorfulTheme {
     use std::sync::OnceLock;
     static THEME: OnceLock<ColorfulTheme> = OnceLock::new();
