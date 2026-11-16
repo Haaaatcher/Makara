@@ -54,7 +54,7 @@ cargo fmt                      # 格式化（提交前运行）
 - ALWAYS 给新的 core 行为配测试（vault 加解密、同步合并这类逻辑必须有 roundtrip/边界用例）
 - ALWAYS 保证日志、错误信息、panic 消息里不出现 api_key 与主密码（含部分明文）
 - NEVER 做协议自动推断、key 前缀识别、base_url 归一化——协议只是用户手填的标签
-- NEVER 在任何终端输出中显示明文 key（包括 `show` 命令）——完整 key 只进剪贴板（`--copy`）或双重确认的导出文件（2026-10-24 我明确要求）
+- NEVER 在任何终端输出中显示明文 key（包括 `show` 命令）——完整 key 只进剪贴板（`--copy`）、双重确认的导出文件（2026-10-24 我明确要求），或用户显式 `use` 写入其 AI 工具配置（D59，2026-11-16：写前备份 + 原子写 + 单次确认；项目级默认 gitignore 变体防误提交）
 - NEVER 把明文凭证写入任何会被同步或提交的文件；明文导出必须走显式确认流程
 - NEVER 让 `myapikey-core` 依赖 CLI / GUI 或任何 UI 相关 crate
 - NEVER 绕过删除墓碑机制物理删除记录

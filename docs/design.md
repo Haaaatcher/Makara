@@ -1,8 +1,8 @@
 # Makara 设计文档
 
-> 版本：v1.0.0
-> 日期：2026-10-31
-> 状态：v1.0.0 已发布（M0–M4 完成，M5 macOS GUI 待启动）
+> 版本：v1.2.1
+> 日期：2026-11-16
+> 状态：v1.2.1 已发布（M0–M5 完成，M6 生态适配立项——D59）
 
 ---
 
@@ -25,7 +25,8 @@ Makara 是一个跨平台（Windows / macOS / Linux）的 AI API 凭证记录与
 - ❌ 不做代理 / 网关 / 请求转发
 - ❌ 不做团队共享、权限管理
 - ❌ 不做 TOTP 之类的动态口令
-- ❌ 不做生态集成 / 凭证供给（写配置文件、扫描导入、环境变量——D24，2026-10-29 永久关闭，交给 CC Switch 等专业工具）
+- ❌ 不做 GUI 应用内部存储的凭证供给（Cursor / Cline / Cherry Studio 等的 SQLite / state.vscdb——D59 划定，这类场景降级为剪贴板 + 设置指引）
+- ❌ 不做扫描导入与通用配方引擎（扫描磁盘既有配置反向导入、`[[field]]` 字段映射引擎——D17–D23 已删除不复活；D59 恢复的是逐个生态的定向适配，shell 环境变量单项供给也不做）
 - ❌ 不做生物识别解锁（Windows Hello / Touch ID——2026-10-30 讨论后否决：增加攻击面与平台耦合，收益不成比例）
 
 ---
@@ -51,7 +52,7 @@ Makara 是一个跨平台（Windows / macOS / Linux）的 AI API 凭证记录与
 | D15 | 窗口与进程策略（2026-10-25 需求）：**托盘常驻**（关闭/最小化均收进系统托盘，会话保活；托盘菜单 显示/退出，显式退出才结束）；**单实例**（tauri-plugin-single-instance，二次启动聚焦已有窗口）；**启动状态跟随上次**：上次未锁定退出且记住的密码在有效期内 → 静默恢复解锁；锁定（手动/自动，会清记忆）或过期 → 必须输入主密码 | 托盘保活让"恢复到上次状态"无需把主密码落盘（明文永不写文件是铁律） |
 | D16 | 应用内更新（2026-10-25）：GUI 集成官方 `tauri-plugin-updater`，更新源为 GitHub Releases 的 `latest.json`（`scripts/make-latest-json.py` 生成），安装包 Ed25519 签名；设置页手动检查、下载验签、静默安装、重启。**token 失效自愈闭环（2026-10-26）**：设置页「重新授权 GitHub」走设备流刷新 token（不重建 vault）。**破坏性守卫**：Release notes 首行 `[breaking]` 标记或主版本号提升 → 拒绝自动安装，引导手动升级。CLI 不做自替换：`makara update` 检查后提示 `cargo install --git <repo> --tag <v> myapikey-cli` 升级命令。**⚠ 2026-11-11 被 D40 修订：CLI 改为零依赖自更新（Release 附件下载 + rename 替换），cargo 指引废弃——它要求用户装 Rust 工具链，与大众产品定位背离** | 普通更新零门槛（管 key 的工具要能及时拿到修复）；签名防中间人是凭证管理器的安全底线 |
 | D17–D23 | （已删除：导入/供给/配方引擎相关决议，随 D24 整体关闭） | 见 D24 |
-| D24 | **生态集成与凭证供给永久关闭**（2026-10-29 用户拍板）：apply/restore/配方引擎/`[[field]]` 字段模型整体删除，切换凭证交给 CC Switch 等专业工具。**勿再提议** | 做复杂有成本的事（各家私有 schema/漂移修复）；简单替代品（setx/手抄 export）不值得做 |
+| D24 | ~~**生态集成与凭证供给永久关闭**~~（2026-10-29 用户拍板）→ **被 D59 修订**（2026-11-16：定向生态适配回归路线图，逐生态 Target 适配器持续供给；GUI 内部存储 / 扫描导入 / shell 环境变量单项 / 通用配方引擎仍不做） | 原理由：做复杂有成本的事（各家私有 schema/漂移修复），简单替代品不值得做；D59 起漂移成本改由 fixture 快照测试 + 不做清单正面管理 |
 | D25 | **M4 零外部依赖（2026-10-29）**：移除系统 git，同步改 **GitHub Contents API 直连**（`SyncStore` trait：`fetch_head` / `put_blob`(CAS) / `download_ref` + GitHub 实现 + 测试用内存实现）；单文件 CAS 语义，409 冲突自动重拉重合并（限 3 轮）；本地状态 = `vault.mkv` + config 的 `last_sync_sha`/`push_pending`/`last_sync_at`/`remote_repo`；远端仅支持 GitHub（`owner/name` 归一化，SSH 形态拒绝）；status 的 ahead/behind 提交数 → `pending` 布尔；老仓库无缝迁移（Contents API 直读现有 `vault.mkv`，历史 commit 全保留） | gitoxide push 至 2026 未实现（fetch ✓/push ✗），libgit2 引入 C 编译链；GitHub Contents API 单文件 ≤1MB 全功能且每次 PUT 自动产生 commit（网页历史无损） |
 | D26 | **M5 macOS GUI 适配（2026-10-30 立项）**：窗口应用发布 macOS 版，仅 Apple Silicon（`aarch64-apple-darwin`），不做 Intel/Universal | 里程碑编号沿用 M5（原生态集成 M5 已随 D24 关闭） |
 | D27 | **同步状态数据层单一化**（2026-10-31）：**config.toml 是同步状态的唯一数据源，显示一律从数据派生**——① `mark_synced` 记账唯一入口（三件套原子写入），解绑走对称的 `unbind_remote`；② `remote_repo` 恒为归一化 `owner/name`；③ GUI「忘记 GitHub 授权」= 清令牌 + 解绑一次写清 | 状态字段散落多处手写必有遗漏（GUI 接入后显示 never 等全是手写漂移） |
@@ -86,6 +87,7 @@ Makara 是一个跨平台（Windows / macOS / Linux）的 AI API 凭证记录与
 | D56 | **GitHub 凭据改文件存储，主密码副本留钥匙串**（2026-11-12 用户拍板，钥匙串弹窗治理）：macOS 上 GitHub access/refresh token 与过期时间戳从钥匙串（3 条目）改为应用数据目录 `github-credentials.json`（unix 0600 + 临时文件原子替换），**Windows/Linux 保持 keyring 不变**（D54 保障条款：非 macOS 行为零改动，cfg 门控分叉）；主密码记住副本**留钥匙串**（「明文密码不落盘」铁律不破）。动因：钥匙串 ACL 逐条目授权 × ad-hoc 签名（每次构建新身份）= 新二进制首次触碰每条条目弹一次授权窗（用户实测 4 连弹）；gh/aws/docker/ssh 的 0600 文件实践是业界对「无稳定签名身份下的凭据存储」的成熟答案。每二进制弹窗 4 → 1（仅主密码条目）。兼容：读路径文件优先、钥匙串遗留回退（access token 命中即顺手写文件完成迁移）；**遗留钥匙串条目不主动删除**（删除同样触发弹窗，违背治理目标）——残留由用户在「钥匙串访问」手动清理或随 GitHub 侧过期；`client_secret` 遗留读取路径不动（近乎死代码）。凭据文件不参与同步（同步只上传 vault.mkv） | 钥匙串弹窗的根因是 ACL 授权模型叠加无稳定签名身份，无法在免费前提下根治「更新后重弹」；文件存储把 GitHub 凭据的弹窗面清零，主密码副本维持既有安全语义；平台分叉以 cfg 门控守住 Windows 保障条款 | 裸绑定让「绑定成立」与「数据一致」脱钩——绑定后 UI 报告的还是本地旧记录数，用户对远端落了什么毫无感知；逐仓询问打破「绑定不该让用户手动填地址」（2026-11-10 拍板）的零输入承诺；分叉属低频历史遗留且手动修法只有一条命令 |
 | D57 | **凭据库条目改名 makara + 回退迁移 + GUI 钥匙串引导**（2026-11-12 用户拍板）：凭据库 service 名 `myapikey` → **`makara`**（产品统一命名；授权弹窗里用户看到的是条目名，旧名 `myapikey` 与产品名割裂造成困惑）。范围：主密码记住副本条目（`makara/default`，全平台）+ 非 macOS 的 GitHub 令牌条目（`makara/github` 等三条；macOS 上 D56 已改文件存储、遗留条目只读回退，回退目标同步改指旧名）。迁移语义（读路径统一）：新名 miss → 旧名 `myapikey` 回退读取 → 命中即迁入新名（写回）+ 日志留痕；**旧条目一律不主动删除**（macOS 删除触发弹窗，D56 治理同款；`forget`/`remote unset` 的清理路径对旧名条目尽力删除、失败静默——读路径授权过则删除自然免弹）。隔离 service 名 `myapikey-isolated` 不变（测试/便携条目无跨版本迁移语义）。配套：①GUI 解锁页**钥匙串引导提示条**（系统授权弹窗文案不可自定义，应用内预告补位）——后端以「当前二进制哈希 vs `build-id.txt` 记录」检测新构建，新构建首次打开时提示「点『始终允许』」，确认一次后不再显示（双语，简约六则）；②D56 缺口修复——`keychain_token_expires` 急切求值改为惰性（文件命中即不碰钥匙串，2026-11-12 弹窗排查中抓到）。证据：迁移路径 macOS 专属测试（自建条目，不碰真实凭据）、build-id 纯逻辑测试 | 新条目一旦创建即获创建者隐式授权（macOS 钥匙串机制），**迁移完成后主密码副本读路径永久免弹**——比旧名条目（历史条目，每个新构建都要重新授权）治理效果更彻底；弹窗显示条目名与产品名一致，减少「myapikey 是什么」的困惑 | 改名让既有用户的旧条目回退读取可能多弹一次（一次性，迁移读完成即终结）；Windows/Linux 令牌条目随改名静默迁移（凭据库无 ACL 弹窗成本）；`myapikey` 旧条目残留由用户手动清理（同 D56 约定） |
 | D58 | **时间显示语义统一：存储一律 UTC、展示层本地化**（2026-11-16 用户真机命中）：GUI 卡片相对时间错位 8 小时（东八区）——`RecordView.updated_at` 此前 format 成 naive UTC 串（无时区标记），前端 `new Date` 按 JS 规范把无时区串解析为本地时间，UTC 时刻被当本地钟读出整段时差；改为 RFC3339 毫秒+Z（与前端 mock 的 `toISOString()` 同形态，视图按 `updated_at` 字符串排序的字典序语义不变），附回归测试 `to_view_updated_at_is_rfc3339_utc`。同批：CLI `show` 的 Created/Updated 由无标记 UTC 输出转 `Local` 时区显示；落库 `fetch_models_with_reason`——模型列表拉取失败携带人读原因，CLI 交互降级提示「现象+出路」替代静默 None（D5 降级语义不变，2026-11-13 静默降级反馈的落地） | 跨语言边界的时间戳必须携带时区标记：JS 把 naive 串当本地时间、chrono 存的是 UTC，两侧解析语义不对称是高发坑；产品约定固化为「存储一律 UTC，展示层负责本地化」 |
+| D59 | **M6 生态适配立项：修订 D24**（2026-11-16 用户深思熟虑后推翻"永久关闭"）：**凭证供给回归路线图**，模式 = 对每个生态持续适配——core 统一 `Target` 抽象（`detect` / `status` / `apply` / `dry-run`），每生态一个实现单元，CLI 与 GUI 复用同一 core 逻辑（三端同步铁律不变）。接入顺序（最广泛 × 最简单优先）：① **Claude Code**（`~/.claude/settings.json` env 块：`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，部分网关用 `ANTHROPIC_API_KEY`，token 风格可选）② **Codex**（`~/.codex/config.toml` + `auth.json`）③ Gemini CLI / 通用 `.env` 文件（shell export 形态仍不做，体验依赖 shell 集成）。**协议族门控**：adapter 声明可消费的协议族（D28 五值按族映射，细则实现时划定），Custom 需显式确认——依据用户手填标签，不违反"不推断"铁律。**安全细则**：仅用户显式发起（CLI `makara use <record> [--into <target>]` / GUI 记录详情页按钮；命令名避开已删的 apply/restore）；写前备份原文件 + 原子写（temp+rename）；交互默认单次确认（展示目标文件与字段路径、key 掩码），非交互 `--yes`；key 不进命令行参数 / 日志 / 错误 / 输出；项目级默认写 gitignore 的 local 变体（`.claude/settings.local.json`），写会被提交的共享变体需显式确认。**漂移防线**：每 target fixture 快照测试锁定上游 schema（变更测试先红）；每个生态接入时 ADR 补记字段路径与核对日期。**不做清单**：GUI 应用内部存储（写坏即损用户数据，降级为剪贴板 + 设置指引）、扫描导入、shell 环境变量单项供给；**不复活旧配方引擎**（D17–D23 存档不翻案，适配器是每 target 的具体实现而非通用字段映射） | Agent Skill 落地验证了「把 vault 凭证投入使用」的真实需求；记录与使用之间处处手抄是断裂体验；漂移成本以 fixture 测试 + 不做清单正面管理，收窄后的边界可控 |
 
 ---
 
@@ -347,7 +349,8 @@ makara import <file>             # 导入（按 updated_at 新者胜）
 | M2 | Tauri GUI（解锁/列表/编辑/搜索/设置/同步状态、空闲自动锁、剪贴板清除），仅发布 Windows | ✅ |
 | M3 | 导入导出、应用内更新（D16）、两端模糊搜索、dialoguer 交互菜单、三批代码审查 | ✅ v1.0.0 发布（2026-10-26） |
 | M4 | 零外部依赖（D25，2026-10-29）：移除系统 git，GitHub Contents API 直连 | ✅ 2026-10-31 完成 |
-| M5 | macOS GUI 适配（D26/D54）：仅 Apple Silicon | 🚧 进行中（2026-11-12 开工） |
+| M5 | macOS GUI 适配（D26/D54）：仅 Apple Silicon | ✅ 随 v1.2.1 发布（D54–D57 全绿） |
+| M6 | 生态适配（D59）：Target 框架 + Claude Code 首发；Codex、Gemini CLI/.env 后续逐个接入 | 📋 立项（2026-11-16） |
 
 ---
 
