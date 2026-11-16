@@ -34,6 +34,14 @@ makara search openai     # fuzzy: name, base URL, notes, protocol label
 makara key <target>      # full key to clipboard, never printed
 ```
 
+## Apply credentials to a tool config
+
+```bash
+makara use <target> [--into claude] [--project] [--yes] [--dry-run]
+```
+
+The sanctioned way to put a key into a config file — prefer it over clipboard + manual editing. It writes the record's base URL and key into Claude Code's `settings.json` env block, showing a plan first (paths and fields, key masked) and backing up the original file once as `.bak`. Default scope is the user config (applies everywhere); `--project` writes the gitignored `.claude/settings.local.json` in the current directory; `--project --shared` writes the committed `.claude/settings.json` — warn the user about the git-leak risk before that one. Only Anthropic-family records are accepted; OpenAI-family records are refused. Non-interactive shells need `--yes`.
+
 ## Add a record
 
 Non-interactive (agent-friendly):

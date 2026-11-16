@@ -129,6 +129,20 @@ Master passphrase: ********
 makara key 1
 ```
 
+**把凭证配置到 AI 工具**（当前支持 Claude Code；写入前展示计划并确认，原配置自动备份）：
+
+```bash
+makara use 1                       # 用户级：~/.claude/settings.json，全局生效
+cd /path/to/myproject
+makara use 1 --project             # 项目级：.claude/settings.local.json（个人，gitignore）
+makara use 1 --project --shared    # 项目共享变体：会被提交进 git，key 随仓库泄露，慎用
+makara use 1 --dry-run             # 只看计划，不写盘
+```
+
+- 默认写 `ANTHROPIC_AUTH_TOKEN`（Bearer 形态，三方网关/中转）；`--api-key` 切换为 `ANTHROPIC_API_KEY`（x-api-key 形态）；
+- 只接受 Anthropic 族的记录（OpenAI 族记录直接拒绝），写完重启 Claude Code 会话生效；
+- 首次写入自动把原文件备份为 `settings.json.bak`（只建一次，永久保留接入 Makara 前的原貌）。
+
 **验证 key 是否还有效**（真发一次 `/models` 请求，不消耗 token）：
 
 ```bash
@@ -215,24 +229,25 @@ makara remote unset        # 解绑远端仓库（回到单机）
 ```text
 Record and sync AI API credentials. Encrypted, synced via your own GitHub private repo
 
-Usage: makara.exe <COMMAND>
+Usage: makara <COMMAND>
 
 Commands:
   init    Initialize: authorize GitHub if needed, create/reuse the private repo, download or upload the vault
   add     Add a record interactively. Omitted fields are prompted
-  update  Check for a newer release and self-update in place
-  key     Copy a record's API key to the clipboard (never printed)
+  update  Check for a newer release and print the upgrade command
   list    List all records. Keys are masked
   search  Search records (fuzzy match on name, URL, notes)
   show    Show one record. Key is always masked; use --copy to put it on the clipboard
+  key     Copy a record's API key to the clipboard (the key is never printed)
+  use     Apply a record's credentials to an AI tool's config (currently Claude Code). The plan is shown first; the key lands in the config file, never on screen
   edit    Edit a record field by field. Enter keeps the current value
   delete  Delete a record. Keeps a tombstone, purged after the grace period
   check   Check key validity via GET /models. Checks all records if no target given
   sync    Sync: pull + merge + push
   status  Show repository and sync status
   remote  Manage the remote repository
-  passwd   Change the passphrase
-lock     Lock now: forget the remembered passphrase on this machine
+  passwd  Change the passphrase
+  lock    Lock now: forget the remembered passphrase on this machine (the vault is untouched)
   export  Export all records to a JSON file in PLAINTEXT. Asks twice before writing; no argument = the current directory
   import  Import records from a JSON file
 
