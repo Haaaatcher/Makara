@@ -74,7 +74,7 @@ import   Import records from a JSON file
 
 ## 🤖 Agent Skill（AI 智能体集成）
 
-Makara CLI 天然适合 AI 智能体操作：key 在任何输出中都是掩码、完整 key 只进剪贴板、`add` 支持全参数非交互执行。仓库提供现成的 [Agent Skill](skills/makara/SKILL.md)——一份教 AI 编程工具（Claude Code、ZCode 等）安全使用 `makara` 的说明书，装好后直接对智能体说「查一下我的 OpenAI key 还有没有效」「把主力 key 配到这个项目」即可。
+Makara CLI 天然适合 AI 智能体操作：key 在任何输出中都是掩码、完整 key 只进剪贴板、`add` 支持全参数非交互执行。仓库提供现成的 [Agent Skill](skills/makara/SKILL.md)——一份教 AI 编程工具（Claude Code、Codex 等）安全使用 `makara` 的说明书，装好后直接对智能体说「查一下我的 OpenAI key 还有没有效」「把主力 key 配到这个项目」即可。
 
 ### 安装方式一：手动
 
@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/Haaaatcher/Makara/main/skills/makar
 | 工具 | 个人全局（所有项目可用） | 项目级（仅当前仓库） |
 |---|---|---|
 | Claude Code | `~/.claude/skills/` | `.claude/skills/` |
-| ZCode | `~/.zcode/skills/`（或 `~/.agents/skills/`） | `.zcode/skills/`（或 `.agents/skills/`） |
+| Codex | `~/.codex/skills/` | `.codex/skills/` |
 | 通用（多家工具共享） | `~/.agents/skills/` | `.agents/skills/` |
 
 > [!NOTE]
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/Haaaatcher/Makara/main/skills/makar
 ```text
 请帮我安装 Makara 的 agent skill：
 1. 下载 https://raw.githubusercontent.com/Haaaatcher/Makara/main/skills/makara/SKILL.md
-2. 保存到你的技能目录下的 makara/SKILL.md（目录不存在则创建）：Claude Code 用 ~/.claude/skills/，ZCode 用 ~/.zcode/skills/，其他工具按你的 skill 发现约定选择个人级目录
+2. 保存到你的技能目录下的 makara/SKILL.md（目录不存在则创建）：Claude Code 用 ~/.claude/skills/，Codex 用 ~/.codex/skills/，其他工具按你的 skill 发现约定选择个人级目录
 3. 装好后告诉我最终路径，并确认这个 skill 已能被你发现
 ```
 
