@@ -1893,13 +1893,13 @@ fn release_asset(tag: &str) -> Result<(String, &'static str)> {
     let target = release_target().ok_or_else(|| {
         Error::Usage(
             "no prebuilt binary for this platform.\n  \
-             Download from: https://github.com/Haaaatcher/MyApiKey/releases"
+             Download from: https://github.com/Haaaatcher/Makara/releases"
                 .into(),
         )
     })?;
     let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
     let url = format!(
-        "https://github.com/Haaaatcher/MyApiKey/releases/download/{tag}/makara-{tag}-{target}.{ext}"
+        "https://github.com/Haaaatcher/Makara/releases/download/{tag}/makara-{tag}-{target}.{ext}"
     );
     Ok((url, ext))
 }
@@ -1949,7 +1949,7 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     if !status.success() {
         return Err(Error::Usage(format!(
             "extract failed (tar exit code {}).\n  \
-             Download and update manually: https://github.com/Haaaatcher/MyApiKey/releases",
+             Download and update manually: https://github.com/Haaaatcher/Makara/releases",
             status.code().unwrap_or(-1)
         )));
     }
@@ -2006,7 +2006,7 @@ fn do_upgrade_in(tag: &str, tmp: &Path, dirs: &AppDirs) -> Result<()> {
         if !expected.eq_ignore_ascii_case(&actual) {
             return Err(Error::Usage(format!(
                 "checksum mismatch (expected {expected}, got {actual}).\n  \
-                 Download and update manually: https://github.com/Haaaatcher/MyApiKey/releases"
+                 Download and update manually: https://github.com/Haaaatcher/Makara/releases"
             )));
         }
     }
@@ -2158,7 +2158,7 @@ mod tests {
     fn release_asset_url_shape() {
         let (url, ext) = release_asset("v9.9.9").expect("当前编译平台应有预编译包");
         assert!(url.starts_with(
-            "https://github.com/Haaaatcher/MyApiKey/releases/download/v9.9.9/makara-v9.9.9-"
+            "https://github.com/Haaaatcher/Makara/releases/download/v9.9.9/makara-v9.9.9-"
         ));
         if cfg!(windows) {
             assert_eq!(ext, "zip");

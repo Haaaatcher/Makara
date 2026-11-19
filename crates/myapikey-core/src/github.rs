@@ -456,7 +456,7 @@ fn repo_readme_markdown() -> String {
     concat!(
         "# Makara 同步仓库\n",
         "\n",
-        "这是 [Makara](https://github.com/Haaaatcher/MyApiKey) 的私有同步仓库，由 Makara 自动创建与维护。\n",
+        "这是 [Makara](https://github.com/Haaaatcher/Makara) 的私有同步仓库，由 Makara 自动创建与维护。\n",
         "\n",
         "- `vault.mkv` 是 AES-256-GCM 加密的凭证库，由 Makara 自动读写，请勿手动编辑\n",
         "- 请勿删除本仓库——删除后设备间将无法同步；本地数据不受影响，重新绑定即可恢复\n",
@@ -1453,8 +1453,11 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>> {
 }
 
 /// 源码仓库的 Releases API（版本检查用，公开端点无需认证）。
+/// 2026-11-20 随仓库改名 MyApiKey → Makara 同步：旧名 API 调用虽 301
+/// 可用，但携带失效令牌时 GitHub 直接 401 拒绝（不走重定向），
+/// 版本检查被堵死——端点必须指向现名。
 pub const SOURCE_RELEASES_API: &str =
-    "https://api.github.com/repos/Haaaatcher/MyApiKey/releases/latest";
+    "https://api.github.com/repos/Haaaatcher/Makara/releases/latest";
 
 /// 查询源码仓库的最新 Release tag（如 `v0.2.0`）。
 ///
@@ -1472,17 +1475,28 @@ pub fn latest_release_tag(token: Option<&str>) -> Result<Option<String>> {
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| Error::Usage(format!("failed to build the HTTP client: {e}")))?;
-    let mut req = client
-        .get(SOURCE_RELEASES_API)
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Makara-CLI");
-    // 有令牌就带上：匿名限额对版本检查太紧
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
+    // 闭包包请求构造：带凭据被拒（401）后降级匿名重试——版本检查是
+    // 公开端点，本机令牌被吊销/过期不应堵死更新检查（2026-11-20
+    // v1.3.0 发布核对实测：失效令牌下 update 直接 401 报错）
+    let send = |with_auth: bool| {
+        let mut req = client
+            .get(SOURCE_RELEASES_API)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "Makara-CLI");
+        // 有令牌就带上：匿名限额对版本检查太紧
+        if with_auth {
+            if let Some(t) = token {
+                req = req.header("Authorization", format!("Bearer {t}"));
+            }
+        }
+        req.send()
+    };
+    let mut resp =
+        send(true).map_err(|e| Error::Usage(format!("release check request failed: {e}")))?;
+    if resp.status().as_u16() == 401 {
+        resp =
+            send(false).map_err(|e| Error::Usage(format!("release check request failed: {e}")))?;
     }
-    let resp = req
-        .send()
-        .map_err(|e| Error::Usage(format!("release check request failed: {e}")))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
@@ -1577,7 +1591,7 @@ mod tests {
         assert!(md.contains("Makara"), "README 必须点明软件名");
         assert!(md.contains("vault.mkv"), "README 必须说明数据文件");
         assert!(
-            md.contains("https://github.com/Haaaatcher/MyApiKey"),
+            md.contains("https://github.com/Haaaatcher/Makara"),
             "README 必须链接项目主页"
         );
         assert!(md.contains("请勿删除"), "README 必须明示勿删");

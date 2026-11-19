@@ -2,7 +2,7 @@
 
 > 版本：v1.2.1
 > 日期：2026-11-19
-> 状态：v1.3.0 发布中（M0–M5 完成，M6 生态适配 D59–D70）
+> 状态：v1.3.1 发布中（M0–M5 完成，M6 生态适配 D59–D70）
 
 ---
 
@@ -362,6 +362,7 @@ makara import <file>             # 导入（按 updated_at 新者胜）
 - 托盘图标（D70 分策略）：独立 `icons/tray-icon.png` = 透明底品牌徽标（菜单栏深浅色协调）；应用图标维持纯白打底。`main.rs` 托盘以 `include_bytes!` 内嵌该 PNG（tauri 启用 `image-png` 特性解码），不再复用 `default_window_icon`。
 - 窗口运行时图标（2026-11-20 用户反馈定稿）：`main.rs` setup 对主窗口 `set_icon` 内嵌 `icons/window-icon.png`——Windows 语义里窗口图标同时决定**标题栏 + 任务栏**，与开始菜单同源白底圆角；透明底**只留给托盘**。Windows 任务栏不做 macOS 式遮罩留边（用户截图对比 Telegram 等满幅图标拍板）：护板**满幅 96%**、圆角 **17%**（Fluent 风格）、徽标占护板 **76%**——首版沿用 macOS 的 80.4% 护板在任务栏明显偏小。`icon.ico` 同参数重新生成（桌面快捷方式/开始菜单/任务管理器同源）。
 - 渠道：GitHub Releases（更新通道只认正式 Release）；`cargo install`、scoop/winget/homebrew 后续按需。
+- CLI 更新检查（`latest_release_tag`）：端点常量 `SOURCE_RELEASES_API` 指向源码仓库现名（2026-11-20 随仓库改名同步——旧名 API 调用 301 可用，但携带失效令牌时 GitHub 直接 401 拒绝且不走重定向）；带凭据请求被 401 拒绝时**自动降级匿名重试**——版本检查是公开端点，本机令牌状态不应影响更新检查可用性。匿名限额 60 次/小时/IP 依然存在（走共享代理出口时可能 403，`NO_PROXY` 直连可绕）。
 
 ### 10.1 生态适配登记（D69 发版红线：每次发版以各生态最新版核对，版本与日期记入下表并写入 Release notes）
 
