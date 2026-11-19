@@ -181,7 +181,32 @@ pub fn delete(dirs: &AppDirs) -> Result<bool> {
 /// D57 迁移：新 service 名下无条目时回退读旧名（`myapikey`）——命中即
 /// 迁入新名（写回）+ 日志留痕。隔离环境跳过回退（[`SERVICE_ISOLATED`]
 /// 无历史条目，没有迁移语义）。
+/// 无图形会话检测（D67）：SSH 等非图形会话里 securityd 无法弹出钥匙串
+/// 授权框，读取记住副本会**静默阻塞**（终端零提示、SSH 完全不可见——
+/// 2026-11-19 用户实测）。命中时调用方应跳过钥匙串读取并给出路（手动
+/// 输入 / `MYAPIKEY_PASSPHRASE`）。仅 macOS 参与判定（其他平台的凭据库
+/// 没有授权弹窗成本，读写永远安全）。
+#[must_use]
+pub fn headless_session() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("SSH_CONNECTION").is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 fn get_raw(dirs: &AppDirs) -> Option<String> {
+    // D67：无图形会话不发起读取——securityd 的授权框发不出来，同步调用
+    // 会无限挂起；跳过后调用方自然降级到手动输入（写操作不受影响：
+    // set/delete 不读机密数据，不触发授权框）
+    if headless_session() {
+        crate::log::info(
+            "keychain",
+            "headless (SSH) session: skip remembered-passphrase read (keychain prompt not possible)",
+        );
+        return None;
+    }
     let svc = service_of(dirs);
     let legacy_svc = if dirs.from_env {
         None

@@ -1,8 +1,8 @@
 # Makara 设计文档
 
 > 版本：v1.2.1
-> 日期：2026-11-16
-> 状态：v1.2.1 已发布（M0–M5 完成，M6 生态适配立项——D59）
+> 日期：2026-11-19
+> 状态：v1.3.0 发布中（M0–M5 完成，M6 生态适配 D59–D70）
 
 ---
 
@@ -88,6 +88,16 @@ Makara 是一个跨平台（Windows / macOS / Linux）的 AI API 凭证记录与
 | D57 | **凭据库条目改名 makara + 回退迁移 + GUI 钥匙串引导**（2026-11-12 用户拍板）：凭据库 service 名 `myapikey` → **`makara`**（产品统一命名；授权弹窗里用户看到的是条目名，旧名 `myapikey` 与产品名割裂造成困惑）。范围：主密码记住副本条目（`makara/default`，全平台）+ 非 macOS 的 GitHub 令牌条目（`makara/github` 等三条；macOS 上 D56 已改文件存储、遗留条目只读回退，回退目标同步改指旧名）。迁移语义（读路径统一）：新名 miss → 旧名 `myapikey` 回退读取 → 命中即迁入新名（写回）+ 日志留痕；**旧条目一律不主动删除**（macOS 删除触发弹窗，D56 治理同款；`forget`/`remote unset` 的清理路径对旧名条目尽力删除、失败静默——读路径授权过则删除自然免弹）。隔离 service 名 `myapikey-isolated` 不变（测试/便携条目无跨版本迁移语义）。配套：①GUI 解锁页**钥匙串引导提示条**（系统授权弹窗文案不可自定义，应用内预告补位）——后端以「当前二进制哈希 vs `build-id.txt` 记录」检测新构建，新构建首次打开时提示「点『始终允许』」，确认一次后不再显示（双语，简约六则）；②D56 缺口修复——`keychain_token_expires` 急切求值改为惰性（文件命中即不碰钥匙串，2026-11-12 弹窗排查中抓到）。证据：迁移路径 macOS 专属测试（自建条目，不碰真实凭据）、build-id 纯逻辑测试 | 新条目一旦创建即获创建者隐式授权（macOS 钥匙串机制），**迁移完成后主密码副本读路径永久免弹**——比旧名条目（历史条目，每个新构建都要重新授权）治理效果更彻底；弹窗显示条目名与产品名一致，减少「myapikey 是什么」的困惑 | 改名让既有用户的旧条目回退读取可能多弹一次（一次性，迁移读完成即终结）；Windows/Linux 令牌条目随改名静默迁移（凭据库无 ACL 弹窗成本）；`myapikey` 旧条目残留由用户手动清理（同 D56 约定） |
 | D58 | **时间显示语义统一：存储一律 UTC、展示层本地化**（2026-11-16 用户真机命中）：GUI 卡片相对时间错位 8 小时（东八区）——`RecordView.updated_at` 此前 format 成 naive UTC 串（无时区标记），前端 `new Date` 按 JS 规范把无时区串解析为本地时间，UTC 时刻被当本地钟读出整段时差；改为 RFC3339 毫秒+Z（与前端 mock 的 `toISOString()` 同形态，视图按 `updated_at` 字符串排序的字典序语义不变），附回归测试 `to_view_updated_at_is_rfc3339_utc`。同批：CLI `show` 的 Created/Updated 由无标记 UTC 输出转 `Local` 时区显示；落库 `fetch_models_with_reason`——模型列表拉取失败携带人读原因，CLI 交互降级提示「现象+出路」替代静默 None（D5 降级语义不变，2026-11-13 静默降级反馈的落地） | 跨语言边界的时间戳必须携带时区标记：JS 把 naive 串当本地时间、chrono 存的是 UTC，两侧解析语义不对称是高发坑；产品约定固化为「存储一律 UTC，展示层负责本地化」 |
 | D59 | **M6 生态适配立项：修订 D24**（2026-11-16 用户深思熟虑后推翻"永久关闭"）：**凭证供给回归路线图**，模式 = 对每个生态持续适配——core 统一 `Target` 抽象（`detect` / `status` / `apply` / `dry-run`），每生态一个实现单元，CLI 与 GUI 复用同一 core 逻辑（三端同步铁律不变）。接入顺序（最广泛 × 最简单优先）：① **Claude Code**（`~/.claude/settings.json` env 块：`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，部分网关用 `ANTHROPIC_API_KEY`，token 风格可选）② **Codex**（`~/.codex/config.toml` + `auth.json`）③ Gemini CLI / 通用 `.env` 文件（shell export 形态仍不做，体验依赖 shell 集成）。**协议族门控**：adapter 声明可消费的协议族（D28 五值按族映射，细则实现时划定），Custom 需显式确认——依据用户手填标签，不违反"不推断"铁律。**安全细则**：仅用户显式发起（CLI `makara use <record> [--into <target>]` / GUI 记录详情页按钮；命令名避开已删的 apply/restore）；写前备份原文件 + 原子写（temp+rename）；交互默认单次确认（展示目标文件与字段路径、key 掩码），非交互 `--yes`；key 不进命令行参数 / 日志 / 错误 / 输出；项目级默认写 gitignore 的 local 变体（`.claude/settings.local.json`），写会被提交的共享变体需显式确认。**漂移防线**：每 target fixture 快照测试锁定上游 schema（变更测试先红）；每个生态接入时 ADR 补记字段路径与核对日期。**不做清单**：GUI 应用内部存储（写坏即损用户数据，降级为剪贴板 + 设置指引）、扫描导入、shell 环境变量单项供给；**不复活旧配方引擎**（D17–D23 存档不翻案，适配器是每 target 的具体实现而非通用字段映射）。**落地核对**（2026-11-16，Claude Code 首个接入）：字段路径与本次决策一致，fixture 快照测试随实现落库（core `supply` 模块） | Agent Skill 落地验证了「把 vault 凭证投入使用」的真实需求；记录与使用之间处处手抄是断裂体验；漂移成本以 fixture 测试 + 不做清单正面管理，收窄后的边界可控 |
+| D60 | **use 供给增补模型映射**（2026-11-18 用户指出缺口后拍板，方案 A）：Claude Code 适配器写入 `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_HAIKU_MODEL` **三键同指一个模型**（别名解析层——三键同指是网关单模型场景的标准做法，haiku 别名兼任后台任务模型，不写会导致后台请求打到网关没有的 claude-haiku）；**只动别名层**，不碰 settings `model` 键、不写 `ANTHROPIC_MODEL`（两者优先级压过用户会话内 `/model` 手动切换，接管即打架）。模型来源优先级：`--model <name>` 显式 > `--no-model` 跳过（网关卖 claude 全家桶、别名透传即可）> 缺省按记录——记录 1 个模型自动写入、多个交互选择、非交互多模型拒绝并要求显式、0 个不写映射（计划注明原因）。映射键已存在时照常 Old 值展示后覆盖。键名 2026-11-18 经官方文档核对（`ANTHROPIC_SMALL_FAST_MODEL` 已废弃由 HAIKU 键取代，不使用） | 记录的 `models` 字段本为此用途而存，供给不写映射等于数据白存；别名层映射保留 `/model` 自由切换；单模型自动 + 多模型交互 = 零输入承诺与防误写的平衡 |
+| D61 | **use 交互模式：参数与交互双轨**（2026-11-18 用户要求，范式同 `add` 的"缺省项逐项询问"）：**显式参数永远优先，交互只补缺省**；`--yes` 语义收敛为"跳过全部确认与菜单"，非 TTY 全程纯参数语义不变。五处交互点：①记录——无 target 时 TTY 走 `select_record` 选择器（按最近更新倒序与 list 一致），非 TTY 报错要求 id/名称；②范围——`--project` / `--shared` 均未给且 TTY 且非 `--yes` → 三项菜单（用户级/项目个人/项目共享，默认用户级），隐藏知识（共享变体）由此可见可改；③token 形态——未给 `--api-key` 且 TTY 且非 `--yes` → 两项菜单（默认 AUTH_TOKEN）；④模型映射——在 D60 上增补：TTY 且非 `--yes` 时 Auto 出菜单（全部模型 + "跳过映射"项，单模型预选、Enter 即 D60 的自动语义），非交互语义与 D60 完全一致；⑤计划确认——D59 既有。菜单一律 dialoguer 组件 + 行输入兜底（EOF 安全默认） | 零输入承诺只对脚本（非 TTY / `--yes`）生效；人的路径宁可多一次回车也不静默猜 |
+| D62 | **use 交互菜单目标驱动化**（2026-11-18 用户指出 D61 的范围菜单写死了 Claude Code 语义，必须为多生态做准备）：CLI 不硬编码任何生态的配置知识——**范围菜单**的选项集合与文案由 `Target::supported_scopes()` 提供（每项 = Scope + 面向用户描述；返回顺序即菜单顺序、**首项即默认**；目标不支持的范围根本不出现在菜单里，flag 显式给了不支持的范围则报错）；**token 形态菜单**由 `Target::credential_styles()` 提供（每项 = api_key_style 取值 + 文案；`None` = 该目标无形态之分、不问）。CLI 只负责"问 + 把选择塞进 ApplyOptions"。Claude Code 的三范围与 AUTH_TOKEN/API_KEY 文案迁入其适配器，用户可见行为不变（菜单内容逐字相同） | "不断适配"的抽象边界：谁的知识谁保管，CLI 是纯交互壳；未来生态接入时自带菜单文案与选项集合，CLI 零改动。Old 值展示的字段标签（如 "opus alias"）暂留 CLI 侧——它绑定 core 的 SuppliedCreds 结构，等第二个生态真正接入时随该结构一并泛化，不做投机抽象 |
+| D63 | **目标选择纳入交互首位**（2026-11-18 用户指出 `makara use` 交互流程默认在配 Claude Code 却从未告知——与 D62"菜单目标驱动"原则自相矛盾）：交互流程改为 **target 最先问**（"Which tool should this credential be applied to?"，选项 = 各 target 的 display_name），此后依次记录 → 协议族门控 → 范围 / 形态 / 模型（均 target 驱动）→ 计划确认；`--into` 显式给过则跳过此问；**单目标也出菜单**（默认预选、回车即过）——"正在配什么"始终可见，未来接入第二生态时流程结构零变更；非 TTY 维持单目标静默默认 / 多目标报错的脚本语义 | 目标是后续所有问题的语境（范围与形态菜单都来自它），先问才自洽；静默默认让"配置了什么工具"成为隐藏行为，违背 D61 的可见性原则（人的路径宁可多一次回车也不静默猜） |
+| D64 | **模型映射按别名分派 + 菜单文案去行话**（2026-11-18 用户两点反馈）：①映射数据结构 `Option<String>`（三键同指）→ `ModelMapping { opus, sonnet, haiku }`（`None` 的别名本次不动）；交互 Auto 在多模型记录时先问策略——"三别名同指一个模型（recommended，网关单模型主流）"或"逐别名分派"（opus/sonnet/haiku 各出一菜单，选项 = 记录模型列表），单模型记录维持"模型+跳过"菜单（策略菜单无意义）；参数新增 `--model-map opus=X,sonnet=Y,haiku=C`（子集合法、未提及别名不动，与 `--model` / `--no-model` 互斥），`--model` 保留为三键同指简写，非交互多模型语义不变（拒绝并要求显式）；②范围/形态菜单文案去行话——"gitignored" → "never committed to git"、shared 标明 "teammates get the key"、形态项 recommended 前置为选项开头。别名键名与"只动别名层"语义不变（D60 持续成立） | 三别名同指是主流但多模型网关需要 opus/sonnet/haiku 各得其所（如后台 haiku 指到便宜档）；gitignored/Bearer 是行话，菜单文案必须自解释 + 推荐显式标注（用户无法选自己看不懂的项） |
+| D65 | **GUI 供给设计 + 模型映射改纯逐别名**（2026-11-18 用户拍板"CLI 与 GUI 都不做统一映射，用户逐别名分别映射"）：①**映射语义修订（覆盖 D60/D64 的统一映射部分）**——`--model` 移除、Auto 不再自动三键同指；映射只有逐别名形态：交互 = opus/sonnet/haiku 三菜单（选项 = 记录模型 + "Leave untouched"项，三问全留空 = 不动映射并注明），参数 = `--model-map`（子集）；**非交互 Auto 拒绝**（要求 `--model-map` 或 `--no-model`，单模型也不自动——映射是逐别名的用户决策）；**无模型兜底**：记录 0 个模型 → 跳过映射 + 计划注明出路（`makara edit` 补模型或 `--model-map` 显式给）。②**GUI 供给设计**（三端同步的 GUI 侧）：入口 = 编辑抽屉 + 记录卡片双入口（锁定态置灰）；Apply 对话框单屏分组——Tool（语境先可见）/ Scope / Credential style / Model mapping（三下拉 + untouched）/ 计划预览（= CLI dry-run 同源）+ Apply 单次确认；选项集合与文案原样渲染 target 提供的英文（D62 生态知识单源，GUI 不复述翻译防漂移），对话框标题/按钮/toast 走双语字典（HIG：toast 无句末标点）；项目范围弹文件夹选择器（复用 D49 dialog 插件，GUI 无 cwd）；shared 选中即内联警告、Apply 点击即确认；后端 4 个薄命令（targets / options / preview / apply）纯转发 core，零业务逻辑（前端不碰密钥红线不破） | 统一映射替用户做了逐别名的决策（哪怕结果相同），违背"映射是逐别名的用户决策"；无模型兜底必须给出现象 + 出路而非静默跳过；GUI 全部语义复用 core（备份/原子写/损坏拒写/掩码已就位），交互壳零业务逻辑 |
+| D66 | **第二个生态接入：Codex CLI**（2026-11-19 立项，D59 接入顺序②）：core `supply::Codex` 适配器，配置面（**2026-11-19 经官方文档与多方来源核对**）：`~/.codex/config.toml` 单文件用户级（Codex 无项目级配置 → `supported_scopes` 仅 User，检验 D62 目标差异化；CLI/GUI 单选项时跳过范围菜单）。**写入**（树级合并，其余键原样保留）：顶层 `model_provider = "makara"` + `[model_providers.makara]` 表（`name`/`base_url` ← 记录原样/`wire_api` ← **协议标签映射**：`OpenAi`→`"responses"`、`OpenAiChat`→`"chat"`，D28 命名规则与 Codex 的 wire_api 概念一一对应）。**key 落盘路径的取舍**：Codex 自定义 provider 的 key 只有 env_key（环境变量，D59 不做 shell env 供给）/ `[auth]` command 表（不合场景）/ `experimental_bearer_token`（明文落 config.toml）三条路——选 `experimental_bearer_token`（唯一不依赖 shell env 的写完即生效路径，0600 保护；"experimental" 键名是登记在案的漂移风险点，fixture 快照 + 核对日期管理，上游出正式机制即迁移；auth.json 的 OPENAI_API_KEY 只对 openai 官方 provider 生效，不写）。**模型**：顶层 `model = <选定模型>`（Codex 无别名体系 → Target 新增 `model_kind()`（`Main`，Claude 为 `Aliases`），ApplyOptions 新增 `model` 字段——每 target 读自己认识的维度；交互 = 单菜单选模型 + 保持原状，无模型兜底同 D65）。fit 门控：OpenAi/OpenAiChat → Yes，Custom → Confirm，Anthropic 族 → No。CLI `--into codex`；GUI SupplyOptionsView 增 `model_kind` 前端分支渲染；mock 与浏览器验证同步。零新依赖（toml 0.8 已在 core） | 网关用户在 Codex 上只有手抄 config.toml 一条路，是供给价值的第二大场景；wire_api 与协议标签的映射让 D28 的设计红利直接兑现；experimental 键名风险以登记制度正面管理 |
+| D67 | **CLI 钥匙串弹窗可感知性治理**（2026-11-19 用户真机反馈：CLI 触发钥匙串授权框时终端零提示看似卡死，SSH 会话完全看不见弹窗永久挂起）：根因 = 钥匙串条目 ACL 不含当前二进制（ad-hoc 签名无稳定身份，每个新构建必弹）+ `keyring::get_password` 同步阻塞等 GUI 对话框。两项治理：①**控制台预告**（治"无提示"）——CLI unlock / passphrase_for_sync 二级来源（凭据库读取）前，macOS 上按 D57 build-id 机制预告弹窗（"点 Always Allow 同构建不再弹"），CLI 用**独立记录文件 `build-id-cli.txt`**（与 GUI 横幅的 build-id.txt 分离：两个二进制各自独立弹窗、共享记录会互相消费状态）；②**无图形会话跳过**（治"看不见"）——`keychain::headless_session()`（macOS 门控检测 `SSH_CONNECTION`）命中时 core 跳过读取（get_raw 直接 None），CLI 说明原因与出路（手动输入 / `MYAPIKEY_PASSPHRASE`）——**语义取舍（用户拍板）**：SSH 下记住密码主动失效优于无限挂死；写操作（set/delete）不读机密数据不触发授权框，不受影响；GUI 不受影响（永远有图形会话）。**治本选项不做**：主密码副本文件化（按 D56 先例可彻底消灭弹窗）推翻"明文密码不落盘"铁律，安全边界维持 | 挂死比失效糟糕得多；零反馈的同步阻塞是可用性缺陷不是安全特性；弹窗本身是 ad-hoc 签名的固有代价（有稳定签名身份即消失），提示与跳过是免费前提下的最优解 |
+| D68 | **工具选择检测前置：未检测目标显示但不可选**（2026-11-19 用户要求，CLI 与 GUI 一致）：工具菜单先做全量 `detect`——**未检测的目标照样显示**（标注 not detected / 未检测到），但**不可选**：CLI 交互菜单选中未检测项即提示"install it first"并回到菜单（登记顺序不变）；GUI 工具下拉未检测项渲染为禁用态（muted、点击无效），无任何已检测目标时 Apply 按钮同样禁用。**显式 `--into` 的软门控保留**（警告 + 确认 / `--yes` 强行）——"先配置后安装"是合法场景，不可选语义只约束选择界面，不没收显式意图。检测依据维持目录级粗检测（`~/.codex` 等，双向不可靠已知），HOME 不可得时降级为"已检测"（不因基础设施失败brick界面） | 把不可用的选项平铺为可选是假选择；可见但不可选既如实呈现生态版图，又避免用户走完全流程才发现装不上 |
+| D69 | **Codex 对齐 0.170.0（chat 移除）+ 生态版本登记制度**（2026-11-19 用户实测报错后要求：适配以各生态**最新版**为准，版本写入文档与发布说明）：①上游动态——Codex 自 2026-02 起移除 `wire_api = "chat"`（官方 discussion #7782），当前最新版 **0.170.0** 只说 Responses API，写入 chat 配置**启动即报错**；②适配修订——`wire_api` **恒写 `"responses"`**（协议映射废止），fit 门控修订：`OpenAiChat` → **No**（chat 网关记录写入必败，报错引导改标签为 openai 或换端点——写一个启动即炸的配置比拒绝更伤用户）；③**生态版本登记制度（固化为发版红线）**：每次发版以各已接入生态最新版核对适配行为，版本与核对日期写入 design.md「生态适配登记」表（§10），并在 Release notes 中说明支持的生态版本——登记表：Codex CLI **0.170.0**（2026-11-19，responses-only）· Claude Code **2.1.328**（2026-11-18 核对 env 块键名） | 上游砍协议支持是"不断适配"模式的典型冲击，登记制度让每次发版的兼容边界可查可追溯；写必败配置是对用户时间的浪费，硬拒 + 出路优于静默产出坏配置 |
 
 ---
 
@@ -269,9 +279,14 @@ makara update                    # 联网检查新 Release，提示 cargo 升级
 makara search <query>            # 模糊搜索（名称 / URL / 备注 / 协议）
 makara list                      # 列表（key 掩码；含 Models 列与校验状态）
 makara show <名|#序号|id>        # 单条详情（--copy 复制 key 到剪贴板）
-makara use <名|#序号|id>        # 供给（D59）：记录写入 AI 工具配置（计划先行 + 单次确认 +
-                              # 备份 + 原子写；--project 项目级 local 变体 / --shared
-                              # 共享变体，--api-key 切 ANTHROPIC_API_KEY，--dry-run 只看计划）
+makara use [名|#序号|id]        # 供给（D59）：记录写入 AI 工具配置（计划先行 + 单次确认 +
+                              # 备份 + 原子写；--into claude|codex；--project 项目级 local 变体 /
+                              # --shared 共享变体，--api-key 切 ANTHROPIC_API_KEY，--dry-run 只看计划；
+                              # D65/D66 模型映射：Claude 逐别名（--model-map 子集），
+                              # Codex 主模型（--model），--no-model 跳过；
+                              # D61 双轨：显式参数优先，缺省项终端交互引导，--yes/非 TTY 纯参数；
+                              # D62/D63 菜单归 target 所有（范围/形态文案自带），工具菜单居首；
+                              # D68 检测前置：未检测目标显示但不可选（--into 显式软门控保留）
 makara edit <名|#序号|id>        # 逐项修改（所见即所得：回车保留，清空后回车 = 清空）
 makara delete <名|#序号|id>      # 删除（墓碑）
 makara check [目标]              # 校验（无参 = 全部并发，8 路上限）
@@ -304,6 +319,10 @@ makara import <file>             # 导入（按 updated_at 新者胜）
 - **自动锁（硬锁）**：空闲 N 分钟（默认 10）销毁解密状态并清除记住的密码；初始化中间态（授权/绑定意图）一并作废。
 - **跨平台窗口行为（M5，D54）**：关闭收托盘、托盘左键唤起、单实例聚焦与 Windows 完全一致；macOS 分支——最小化走系统默认进 Dock（不藏窗）、Dock 图标点击恢复窗口（`RunEvent::Reopen`）、Cmd+Q 走系统默认菜单退出。
 - **提示词简约**：全部用户可见文案遵循简约六则（D30），GUI 中英双语各自成文。
+- **保存推送反馈（D67 修复）**：`save_record` 的 `SyncOutcome`（pushed / push_error / 单机）不再被丢弃——toast 四态如实呈现（已保存并推送 / 推送失败含原因与「立即同步」出路 / 单机模式 / 自动推送关闭）。
+- **Apply 对话框（D65–D66，D68 检测前置）**：工具下拉**全部目标都显示**，未检测的标注「未检测到」并渲染为禁用态（不可选），默认选第一个已检测目标、无已检测目标时 Apply 按钮同步禁用；未检测到工具时内联软提示（写入仍允许，装好即生效——目录级检测本就双向不可靠）；范围菜单在目标仅一个范围时省略（Codex 无项目级配置）；切工具 = 以新 target 重建对话框（选项集合是 target 专属知识）。**选项文案双语化（2026-11-19 用户反馈修订 D62 的 GUI 单源英文）**：范围/形态选项按枚举（scope 标识 / api_key_style 布尔）走 GUI 双语字典，中文界面全中文；core 结构化字段（枚举值）仍单源，仅文案分层——CLI 维持 core 英文文案。
+- **协议族门控 GUI 补齐（D69）**：后端 `supply_preview/apply` 硬拒 `Fit::No`（与 CLI 同源），前端经 `supply_fit` 三态判定——no 禁用 Apply 并展示原因、confirm 出警告 + 勾选「仍要应用」放行（GUI 无 `--yes`，勾选即显式确认）。**计划预览框已按用户决策移除**（Apply 点击即应用；CLI 保留计划展示）。
+- **选项/警示文案风格（D70 用户反馈后统一）**：标题 + 逗号式描述两行；无破折号拼接、无实现细节（文件名/机制词）、无句末标点混用；推荐标注用括号。
 - 前端只做展示与输入，**一切读写通过 Tauri command 走 core**；前端代码里不出现任何密钥处理逻辑。
 
 ---
@@ -339,7 +358,17 @@ makara import <file>             # 导入（按 updated_at 新者胜）
 - Release 产物：三平台 CLI 单二进制（各含 `myapikey` + `makara`）；GUI 安装包 **Windows（nsis）+ macOS（dmg，仅 Apple Silicon，D26/D54）**，各带 `.sig` 签名 + `latest.json`（`windows-x86_64` 与 `darwin-aarch64` 双平台键）。
 - 更新器产物链（D16）：CI secrets 注入签名密钥；`scripts/make-latest-json.py` 生成清单（带版本一致性断言）；macOS updater 机制件 `.app.tar.gz` 由 `createUpdaterArtifacts` 自动产出（D54）。
 - macOS：无 Apple 开发者账号，产物未签名/公证——CLI 与 GUI 首次运行均需 `xattr -d com.apple.quarantine <文件>`（curl 下载无此问题，README 指引）；应用内更新链路（验签）不受影响。
+- 应用图标（2026-11-19 用户反馈背景银色/透明不现代）：全套 icons 由**矢量管线**生成——原 PNG 经 potrace 4x 超采样描摹为双色 SVG（蓝描边 #0077FB + 白填充双层，`ui/public/emblem.svg`，GUI 头部共用此源），rsvg-convert 渲染 2048 位图 → Pillow 合成：macOS 样式 = 纯白（#FFFFFF）圆角矩形（本体 80.4%、圆角 22.5%，Apple 视觉）+ 透明边距；Windows 样式 = 全出血纯白方底（修复 Square 贴片透明；首版珍珠白经用户拍板改纯白）；徽标居中 64%（光学右移 2.5%）。工具链：potrace + librsvg（brew，本机开发工具）；合成脚本临时不入仓库，图标产物入库。
+- 托盘图标（D70 分策略）：独立 `icons/tray-icon.png` = 透明底品牌徽标（菜单栏深浅色协调）；应用图标维持纯白打底。`main.rs` 托盘以 `include_bytes!` 内嵌该 PNG（tauri 启用 `image-png` 特性解码），不再复用 `default_window_icon`。
+- 窗口运行时图标（2026-11-20 用户反馈定稿）：`main.rs` setup 对主窗口 `set_icon` 内嵌 `icons/window-icon.png`——Windows 语义里窗口图标同时决定**标题栏 + 任务栏**，与开始菜单同源白底圆角；透明底**只留给托盘**。Windows 任务栏不做 macOS 式遮罩留边（用户截图对比 Telegram 等满幅图标拍板）：护板**满幅 96%**、圆角 **17%**（Fluent 风格）、徽标占护板 **76%**——首版沿用 macOS 的 80.4% 护板在任务栏明显偏小。`icon.ico` 同参数重新生成（桌面快捷方式/开始菜单/任务管理器同源）。
 - 渠道：GitHub Releases（更新通道只认正式 Release）；`cargo install`、scoop/winget/homebrew 后续按需。
+
+### 10.1 生态适配登记（D69 发版红线：每次发版以各生态最新版核对，版本与日期记入下表并写入 Release notes）
+
+| 生态 | 适配基准版本 | 核对日期 | 关键事实 |
+|---|---|---|---|
+| Claude Code | 2.1.328 | 2026-11-20 | `settings.json` env 块：`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）；模型别名键 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`（`ANTHROPIC_SMALL_FAST_MODEL` 已废弃）；base_url 非官方时 Remote Control 禁用 |
+| Codex CLI | 0.170.0（2026-11-18） | 2026-11-20 | `config.toml`：顶层 `model` / `model_provider` + `[model_providers.<id>]`（name/base_url/wire_api）；**`wire_api = "chat"` 已移除（discussion #7782），responses-only**；key 经 `experimental_bearer_token` 落 config（env_key 是另一条路，本产品不做） |
 
 ---
 

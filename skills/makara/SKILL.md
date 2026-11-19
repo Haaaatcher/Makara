@@ -37,10 +37,10 @@ makara key <target>      # full key to clipboard, never printed
 ## Apply credentials to a tool config
 
 ```bash
-makara use <target> [--into claude] [--project] [--yes] [--dry-run]
+makara use <target> [--into claude|codex] [--model <id>] [--model-map <spec>] [--no-model] [--project] [--yes] [--dry-run]
 ```
 
-The sanctioned way to put a key into a config file — prefer it over clipboard + manual editing. It writes the record's base URL and key into Claude Code's `settings.json` env block, showing a plan first (paths and fields, key masked) and backing up the original file once as `.bak`. Default scope is the user config (applies everywhere); `--project` writes the gitignored `.claude/settings.local.json` in the current directory; `--project --shared` writes the committed `.claude/settings.json` — warn the user about the git-leak risk before that one. Only Anthropic-family records are accepted; OpenAI-family records are refused. Non-interactive shells need `--yes`.
+The sanctioned way to put a key into a config file — prefer it over clipboard + manual editing. It shows a plan first (paths and fields, key masked) and backs up the original file once as `.bak`. **Claude Code** (`--into claude`, default): writes the record's base URL and key into `~/.claude/settings.json` env block; model mapping is per-alias (`opus`/`sonnet`/`haiku` → `ANTHROPIC_DEFAULT_*_MODEL` keys) via three interactive menus or `--model-map opus=X,sonnet=Y,haiku=Z` (subset ok). **Codex CLI** (`--into codex`, baselined against Codex 0.170.0): writes `~/.codex/config.toml` (`model_provider` + `[model_providers.makara]` with base_url, `wire_api = "responses"` — chat support was removed from Codex, so `openai-chat` records are refused — and the key in `experimental_bearer_token`); single main-model key — interactive menu or `--model <id>` (`--model` is rejected for Claude). `--no-model` skips mapping for either target. Default scope is the user config; `--project` (Claude only) writes the gitignored `.claude/settings.local.json`; `--project --shared` writes the committed file — warn the user about the git-leak risk. Anthropic-family records go to Claude, OpenAI-family to Codex; mismatches are refused. Non-interactive shells (your usual case) keep pure-parameter semantics: pass the record id/name, `--yes`, and the target's model flag. Omitted pieces only prompt in a human's interactive terminal — never pipe input expecting menus.
 
 ## Add a record
 
@@ -103,6 +103,7 @@ makara import <path>     # merge records from a previously exported JSON
 
 - Data directory: `~/.config/myapikey` (macOS: `~/Library/Application Support/myapikey`, Windows: `%APPDATA%\myapikey`).
 - Set `MYAPIKEY_HOME=/tmp/...` to sandbox all data before experimenting or testing commands — never probe against the user's real vault.
+- In SSH sessions on macOS, the remembered passphrase is skipped automatically (the keychain prompt can't be shown over SSH); the CLI says so and asks for the passphrase manually. Set the `MYAPIKEY_PASSPHRASE` env var to keep scripts unattended.
 - Interactive prompts read stdin line by line; on EOF they take the safe default (confirmations default to N), so pipelines work without a TTY.
 
 ## Troubleshooting

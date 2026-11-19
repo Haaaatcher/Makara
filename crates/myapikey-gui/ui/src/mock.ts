@@ -48,6 +48,11 @@ interface MockStore {
     /** 最近一次对账时刻（对齐真实 config.last_sync_at，sync 成功时刷新）。 */
     last_sync: string | null;
   };
+  /** 供给模拟（D65）：虚拟的 ~/.claude/settings.json env 块。 */
+  supply?: {
+    applied: boolean;
+    env: Record<string, string>;
+  };
 }
 
 function load(): MockStore {
@@ -268,7 +273,14 @@ export function mockInvoke<T>(cmd: string, rawArgs?: Record<string, unknown>): P
         });
       }
       save(s);
-      return ok(undefined as T);
+      // D67：与真实后端对齐——保存结果含推送结果（mock 绑定远端即视为已推送）
+      const standalone = !s.settings.remote;
+      return ok({
+        record: s.records[s.records.length - 1],
+        pushed: !standalone,
+        push_error: null,
+        standalone,
+      } as T);
     }
     case "delete_record": {
       const id = String(args?.id);
@@ -310,6 +322,179 @@ export function mockInvoke<T>(cmd: string, rawArgs?: Record<string, unknown>): P
       }
       save(s);
       return ok({ added, updated: 0, backup_path: null } as T);
+    }
+    // ===== 生态供给（D65/D66）：虚拟 ~/.claude/settings.json 与 ~/.codex/config.toml =====
+    case "supply_targets":
+      return ok([
+        { id: "claude", name: "Claude Code", detected: true },
+        { id: "codex", name: "Codex CLI", detected: true },
+      ] as T);
+    case "supply_target_options": {
+      const id = args?.targetId ?? args?.target_id;
+      if (id === "codex") {
+        return ok({
+          scopes: [
+            {
+              scope: "user",
+              label: "User config — all projects on this machine (recommended)",
+            },
+          ],
+          styles: null,
+          model_kind: "main",
+          detected: false,
+        } as T);
+      }
+      return ok({
+        scopes: [
+          {
+            scope: "user",
+            label: "User config — all projects on this machine (recommended)",
+          },
+          {
+            scope: "project-local",
+            label: "Project config, personal — this project only, never committed to git",
+          },
+          {
+            scope: "project-shared",
+            label:
+              "Project config, shared — this project only, committed to git; teammates get the key",
+          },
+        ],
+        styles: [
+          {
+            api_key_style: false,
+            label: "AUTH_TOKEN (recommended) — Bearer auth header, what most gateways / relays use",
+          },
+          {
+            api_key_style: true,
+            label: "API_KEY — x-api-key header (official api.anthropic.com or strict mirrors)",
+          },
+        ],
+        model_kind: "aliases",
+        detected: true,
+        warnings: [],
+      } as T);
+    }
+    case "supply_fit": {
+      if (!s.unlocked) return err("locked — unlock first");
+      const rec = s.records.find((x) => x.id === args?.record_id);
+      if (!rec) return err(`record not found: ${args?.record_id ?? ""}`);
+      const targetId = args?.target_id;
+      if (targetId === "codex") {
+        // mock：OpenAI 族 yes、其余 no（与真实 fit 门控一致）
+        return rec.protocol === "openai" || rec.protocol === "openai-chat"
+          ? ok({ verdict: "yes", reason_key: null, reason: null } as T)
+          : ok({
+              verdict: "no",
+              reason_key: "fitCodexAnthropicFamily",
+              reason: "Codex speaks the OpenAI API; this record is Anthropic-family",
+            } as T);
+      }
+      // claude：与 core fit 语义一致——Anthropic 族 yes、OpenAI 族 no、
+      // complete/custom confirm
+      if (rec.protocol === "anthropic") {
+        return ok({ verdict: "yes", reason_key: null, reason: null } as T);
+      }
+      if (rec.protocol === "openai" || rec.protocol === "openai-chat") {
+        return ok({
+          verdict: "no",
+          reason_key: "fitClaudeOpenAiFamily",
+          reason: "Claude Code speaks the Anthropic API; this record is OpenAI-family",
+        } as T);
+      }
+      return ok({
+        verdict: "confirm",
+        reason_key: "fitClaudeCustom",
+        reason: "custom protocol label; confirm this endpoint serves the Anthropic API",
+      } as T);
+    }
+    case "supply_preview":
+    case "supply_apply": {
+      if (!s.unlocked) return err("locked — unlock first");
+      const req = (args?.request ?? {}) as {
+        record_id?: string;
+        target_id?: string;
+        scope?: string;
+        api_key_style?: boolean;
+        mapping?: { opus?: string | null; sonnet?: string | null; haiku?: string | null };
+        model?: string | null;
+        project_root?: string | null;
+      };
+      const rec = s.records.find((x) => x.id === req.record_id);
+      if (!rec) return err(`record not found: ${req.record_id ?? ""}`);
+      if (s.supply === undefined) s.supply = { applied: false, env: {} };
+      const env = s.supply.env;
+      const mask = (v: string) =>
+        v.length <= 8 ? `${v.slice(0, 2)}...` : `${v.slice(0, 4)}...${v.slice(-4)}`;
+      const old: Array<{ label: string; value: string }> = [];
+      const set: Array<{ label: string; value: string }> = [];
+      let removes: string[] = [];
+      let note: string | null = null;
+      let path: string;
+      const mapping = req.mapping ?? {};
+      const backupNew = !s.supply.applied;
+      if (req.target_id === "codex") {
+        path = "~/.codex/config.toml";
+        if (env.CX_MODEL_PROVIDER) old.push({ label: "model provider", value: env.CX_MODEL_PROVIDER });
+        if (env.CX_MODEL) old.push({ label: "model", value: env.CX_MODEL });
+        if (env.CX_BASE_URL) old.push({ label: "base url", value: env.CX_BASE_URL });
+        if (env.CX_TOKEN) old.push({ label: "bearer token", value: mask(env.CX_TOKEN) });
+        if (env.CX_MODEL_PROVIDER && env.CX_MODEL_PROVIDER !== "makara")
+          note = "top-level model_provider '" + env.CX_MODEL_PROVIDER + "' will be replaced by 'makara'";
+        set.push({ label: "model_provider", value: "makara" });
+        set.push({ label: "model_providers.makara.base_url", value: rec.base_url });
+        set.push({
+          label: "model_providers.makara.wire_api",
+          value: rec.protocol === "openai-chat" ? "chat" : "responses",
+        });
+        set.push({ label: "model_providers.makara.experimental_bearer_token", value: mask(rec.api_key) });
+        if (req.model) set.push({ label: "model", value: req.model });
+        if (cmd === "supply_apply") {
+          env.CX_MODEL_PROVIDER = "makara";
+          env.CX_BASE_URL = rec.base_url;
+          env.CX_TOKEN = rec.api_key;
+          if (req.model) env.CX_MODEL = req.model;
+          s.supply.applied = true;
+          save(s);
+        }
+      } else {
+        if (env.ANTHROPIC_BASE_URL) old.push({ label: "base url", value: env.ANTHROPIC_BASE_URL });
+        if (env.ANTHROPIC_AUTH_TOKEN)
+          old.push({ label: "auth token", value: mask(env.ANTHROPIC_AUTH_TOKEN) });
+        if (env.ANTHROPIC_API_KEY) old.push({ label: "api key", value: mask(env.ANTHROPIC_API_KEY) });
+        for (const role of ["OPUS", "SONNET", "HAIKU"]) {
+          const k = `ANTHROPIC_DEFAULT_${role}_MODEL`;
+          if (env[k]) old.push({ label: `${role.toLowerCase()} alias`, value: env[k] });
+        }
+        const tokenKey = req.api_key_style ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN";
+        const otherKey = req.api_key_style ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
+        set.push({ label: "env.ANTHROPIC_BASE_URL", value: rec.base_url });
+        set.push({ label: `env.${tokenKey}`, value: mask(rec.api_key) });
+        if (mapping.opus)
+          set.push({ label: "env.ANTHROPIC_DEFAULT_OPUS_MODEL", value: mapping.opus });
+        if (mapping.sonnet)
+          set.push({ label: "env.ANTHROPIC_DEFAULT_SONNET_MODEL", value: mapping.sonnet });
+        if (mapping.haiku)
+          set.push({ label: "env.ANTHROPIC_DEFAULT_HAIKU_MODEL", value: mapping.haiku });
+        removes = env[otherKey] ? [`env.${otherKey}`] : [];
+        const file =
+          req.scope === "project-local" ? "settings.local.json" : "settings.json";
+        const dir =
+          req.scope === "user" ? "~/.claude" : `${req.project_root ?? "/mock/project"}/.claude`;
+        path = `${dir}/${file}`;
+        if (cmd === "supply_apply") {
+          env.ANTHROPIC_BASE_URL = rec.base_url;
+          env[tokenKey] = rec.api_key;
+          delete env[otherKey];
+          if (mapping.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = mapping.opus;
+          if (mapping.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = mapping.sonnet;
+          if (mapping.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mapping.haiku;
+          s.supply.applied = true;
+          save(s);
+        }
+      }
+      const backup = s.supply.applied && !backupNew ? `${path}.bak` : null;
+      return ok({ path, backup, backup_new: backupNew, old, set, removes, note } as T);
     }
     case "reveal_key": {
       if (!s.unlocked) return err("locked — unlock first");

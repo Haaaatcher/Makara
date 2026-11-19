@@ -17,12 +17,23 @@ const BUILD_ID_FILE: &str = "build-id.txt";
 /// 判断当前可执行文件是否为上次记录过的同一构建（首次运行恒为「新
 /// 构建」）。新构建时写回当前指纹并返回 `true`；同一构建返回 `false`。
 ///
+/// GUI（D57）入口：记录文件名固定为 [`BUILD_ID_FILE`]。CLI 的引导提示
+/// 用 [`is_new_build_for`] 取独立记录文件——CLI 与 GUI 是两个二进制，
+/// 各自独立触发钥匙串弹窗、各自需要一次引导，共享一份记录会互相消费
+/// 状态（CLI 先跑会把 GUI 的预告状态吃掉）。
+///
 /// `config_dir`：状态文件目录（须已存在）；`exe`：当前可执行文件路径
 /// （调用方用 `std::env::current_exe()` 取得，测试可注入任意文件）。
 ///
 /// 降级策略：元数据读取失败 / 指纹文件 IO 失败一律返回 `false`——
 /// 引导提示是锦上添花，绝不因它失败或打扰用户。
 pub fn is_new_build(config_dir: &Path, exe: &Path) -> bool {
+    is_new_build_for(config_dir, BUILD_ID_FILE, exe)
+}
+
+/// [`is_new_build`] 的独立记录文件版本（D67：CLI 用 `build-id-cli.txt`，
+/// 与 GUI 的 [`BUILD_ID_FILE`] 互不干扰）。
+pub fn is_new_build_for(config_dir: &Path, record_name: &str, exe: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(exe) else {
         return false;
     };
@@ -32,7 +43,7 @@ pub fn is_new_build(config_dir: &Path, exe: &Path) -> bool {
     let secs = mtime
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let record = config_dir.join(BUILD_ID_FILE);
+    let record = config_dir.join(record_name);
     if let Ok(prev) = std::fs::read_to_string(&record) {
         // 格式不符视为无记录（首次/损坏），走「新构建」分支重写
         let mut lines = prev.lines();

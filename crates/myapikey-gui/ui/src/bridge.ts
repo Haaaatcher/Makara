@@ -22,6 +22,7 @@ interface TauriGlobal {
         defaultPath?: string;
         filters?: Array<{ name: string; extensions: string[] }>;
       }) => Promise<string | null>;
+      open: (opts: { title?: string; directory: boolean }) => Promise<string | null>;
     };
   };
 }
@@ -49,6 +50,20 @@ export async function saveDialog(opts: {
   const dlg = tauri?.dialog;
   if (!dlg) return opts.defaultPath ?? null;
   return dlg.save(opts) as Promise<string | null>;
+}
+
+/**
+ * 文件夹选择对话框（dialog 插件，D65 项目级供给用）：返回用户选定的
+ * 目录；取消返回 `null`。浏览器 mock 模式无 Tauri 环境——返回
+ * `fallback` 示意路径，让交互在浏览器里可走通。
+ */
+export async function openFolderDialog(opts: {
+  title?: string;
+  fallback?: string;
+}): Promise<string | null> {
+  const dlg = tauri?.dialog;
+  if (!dlg) return opts.fallback ?? null;
+  return dlg.open({ title: opts.title, directory: true }) as Promise<string | null>;
 }
 
 /** 监听自动锁事件（浏览器 mock 模式下不触发）。 */

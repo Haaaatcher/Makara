@@ -113,7 +113,7 @@ pub async fn save_record(
     input: crate::RecordInput,
     editing_id: Option<String>,
     state: State<'_, SharedState>,
-) -> Result<crate::RecordView, String> {
+) -> Result<crate::SaveResultView, String> {
     let shared = Arc::clone(state.inner());
     tauri::async_runtime::spawn_blocking(move || {
         crate::save_record(&shared, input, editing_id.as_deref())
@@ -442,4 +442,67 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<crate::update::Update
 #[tauri::command]
 pub async fn apply_update(app: tauri::AppHandle) -> Result<(), String> {
     crate::update::apply(&app).await
+}
+
+// ===== 生态供给（D59/D65）：薄封装，业务在 lib.rs supply_* =====
+
+/// 已接入的生态目标（纯内存，同步）。
+#[tauri::command]
+pub fn supply_targets() -> Result<Vec<crate::SupplyTargetView>, String> {
+    Ok(crate::supply_targets())
+}
+
+/// 目标的交互选项（auth.json 读取含文件 IO——D70 预防性放线程池，
+/// 当前毫秒级，未来配置面变大 UI 也不冻结）。
+#[tauri::command]
+pub async fn supply_target_options(
+    target_id: String,
+    state: State<'_, SharedState>,
+) -> Result<crate::SupplyOptionsView, String> {
+    let shared = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::supply_options_with_home(&shared, &target_id).map_err(|e| err_str(&e))
+    })
+    .await
+    .map_err(|e| join_err(&e))?
+}
+
+/// 协议适配判定（会话取记录协议，同步内存操作）。
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri 命令签名由 IPC 框架反序列化决定"
+)]
+pub fn supply_fit(
+    record_id: String,
+    target_id: String,
+    state: State<'_, SharedState>,
+) -> Result<crate::SupplyFitView, String> {
+    crate::supply_fit(state.inner(), &record_id, &target_id).map_err(|e| err_str(&e))
+}
+
+/// 计划预览（dry-run：解密会话取记录明文，放线程池）。
+#[tauri::command]
+pub async fn supply_preview(
+    request: crate::SupplyRequest,
+    state: State<'_, SharedState>,
+) -> Result<crate::SupplyPlanView, String> {
+    let shared = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || crate::supply_preview(&shared, &request))
+        .await
+        .map_err(|e| join_err(&e))?
+        .map_err(|e| err_str(&e))
+}
+
+/// 实际写入（写前备份 + 原子写，放线程池）。
+#[tauri::command]
+pub async fn supply_apply(
+    request: crate::SupplyRequest,
+    state: State<'_, SharedState>,
+) -> Result<crate::SupplyPlanView, String> {
+    let shared = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || crate::supply_apply(&shared, &request))
+        .await
+        .map_err(|e| join_err(&e))?
+        .map_err(|e| err_str(&e))
 }

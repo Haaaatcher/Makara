@@ -40,6 +40,38 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
+/// D67：新构建首次触碰钥匙串前，预告 macOS 授权弹窗（输登录密码后点
+/// 「始终允许」，同构建内不再弹也不再提示）。复用 D57 build-id 机制，
+/// 但 CLI 用**独立记录文件**（`build-id-cli.txt`）——CLI 与 GUI 是两个
+/// 二进制，各自独立触发弹窗、各自需要一次引导，共享记录会互相消费状态。
+/// 非 macOS / 无图形会话（SSH，core 已跳过读取）不提示；**从未用过记住
+/// 功能**（无 remember.json）也不提示——没条目就没弹窗，提示即噪音。
+fn hint_keychain_prompt(dirs: &myapikey_core::paths::AppDirs) {
+    #[cfg(target_os = "macos")]
+    {
+        if keychain::headless_session() {
+            return;
+        }
+        // 只记住过（remember.json 存在）才可能有条目、才可能弹窗
+        let uses_remember = keychain::expires_at(dirs).ok().flatten().is_some();
+        if !uses_remember {
+            return;
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if myapikey_core::build_id::is_new_build_for(&dirs.config_dir, "build-id-cli.txt", &exe)
+            {
+                eprintln!(
+                    "Checking the system credential store — macOS may show a keychain prompt.\n  Enter your login password and click \"Always Allow\" to avoid future prompts for this build."
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = dirs;
+    }
+}
+
 /// 解锁会话：得到可用密码 + 它的来源（用于提示与后续记住逻辑）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PassSource {
@@ -79,19 +111,30 @@ pub fn unlock(dirs: &myapikey_core::paths::AppDirs) -> Result<(String, PassSourc
     }
 
     // 2) 凭据库中未过期的记住密码（过期条目已被 get_with_expiry 顺手清理；
-    //    凭据库不可用时返回 None，同样降级到输入）
-    if let Ok(Some(p)) = keychain::get_with_expiry(dirs) {
-        if vault::decrypt(&bytes, &p).is_ok() {
-            // D32 语义补齐（2026-11-11）：免输解锁同样滚动续期——此前只有
-            // 手动输入路径续期，持续使用时免输窗口死板地停在第一次写入的
-            // TTL，一到点就要重输；GUI 侧常驻 tick 是持续滚动的，用户实测
-            // 「CLI 锁定时间比 GUI 短」正是此处缺失
-            let _ = keychain::set_ttl(dirs, &p, minutes);
-            return Ok((p, PassSource::Keychain));
+    //    凭据库不可用时返回 None，同样降级到输入）。
+    //    D67：SSH 等无图形会话里钥匙串授权框不可见（读取会静默挂起）——
+    //    core 已跳过读取，这里说明原因与出路；本地会话则按需预告弹窗。
+    if keychain::headless_session() {
+        eprintln!(
+            "SSH session detected — the remembered passphrase is unavailable (the keychain prompt can't be shown over SSH).\n  Enter the passphrase manually, or set MYAPIKEY_PASSPHRASE."
+        );
+    } else {
+        hint_keychain_prompt(dirs);
+        if let Ok(Some(p)) = keychain::get_with_expiry(dirs) {
+            if vault::decrypt(&bytes, &p).is_ok() {
+                // D32 语义补齐（2026-11-11）：免输解锁同样滚动续期——此前只有
+                // 手动输入路径续期，持续使用时免输窗口死板地停在第一次写入的
+                // TTL，一到点就要重输；GUI 侧常驻 tick 是持续滚动的，用户实测
+                // 「CLI 锁定时间比 GUI 短」正是此处缺失
+                let _ = keychain::set_ttl(dirs, &p, minutes);
+                return Ok((p, PassSource::Keychain));
+            }
+            // 记住的密码解不开（已在别处改过）：清掉，避免每次都走一遍无效尝试
+            let _ = keychain::delete(dirs);
+            eprintln!(
+                "Note: the saved passphrase is stale, likely changed on another device. Enter it again."
+            );
         }
-        // 记住的密码解不开（已在别处改过）：清掉，避免每次都走一遍无效尝试
-        let _ = keychain::delete(dirs);
-        eprintln!("Note: the saved passphrase is stale, likely changed on another device. Enter it again.");
     }
 
     // 3) 交互输入：最多两次机会；成功后按自动锁定时长续期记住
@@ -133,9 +176,17 @@ pub fn passphrase_for_sync(dirs: &myapikey_core::paths::AppDirs) -> Result<(Stri
             return Ok((p, PassSource::Env));
         }
     }
-    // 2) 凭据库中未过期的记住密码（过期条目已被 get_with_expiry 顺手清理）
-    if let Ok(Some(p)) = keychain::get_with_expiry(dirs) {
-        return Ok((p, PassSource::Keychain));
+    // 2) 凭据库中未过期的记住密码（过期条目已被 get_with_expiry 顺手清理）。
+    //    D67 同 unlock：无图形会话说明原因与出路，本地会话按需预告弹窗
+    if keychain::headless_session() {
+        eprintln!(
+            "SSH session detected — the remembered passphrase is unavailable (the keychain prompt can't be shown over SSH).\n  Enter the passphrase manually, or set MYAPIKEY_PASSPHRASE."
+        );
+    } else {
+        hint_keychain_prompt(dirs);
+        if let Ok(Some(p)) = keychain::get_with_expiry(dirs) {
+            return Ok((p, PassSource::Keychain));
+        }
     }
     // 3) 交互输入：单次采用，失败由 sync 的分支错误如实呈现
     let p = prompt_hidden("Passphrase");
@@ -633,7 +684,7 @@ pub fn select_record(records: &[myapikey_core::model::Record]) -> Result<uuid::U
             format!(
                 "{}  ({} · {})",
                 r.name,
-                r.protocol.display_label(),
+                r.protocol.full_label(),
                 r.masked_key()
             )
         })

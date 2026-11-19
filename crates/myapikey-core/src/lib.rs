@@ -19,12 +19,14 @@
 //! | [`sync`] | 同步引擎：fetch → 解密合并 → commit → push |
 //! | [`probe`] | key 有效性探测：按协议调用 `GET /models` |
 //! | [`check_cache`] | 校验结果的本地缓存（不参与同步） |
+//! | [`supply`] | 生态适配（D59）：把记录供给到各 AI 工具的配置文件（Target 抽象） |
 //!
 //! 安全约束（全库通用，违反即设计缺陷）：
 //! - 解锁密码与派生密钥使用 [`zeroize::Zeroizing`] 包裹，离开作用域即清零；
 //! - 任何日志、错误信息、Display 输出中都不得出现 `api_key` 或解锁密码（含部分明文）；
 //! - `api_key` 明文只允许出现在：内存中的 [`Record`](model::Record)、解密后的 vault 数据、
-//!   剪贴板（`show --copy`）与用户双重确认的导出文件中——**任何终端输出一律掩码**。
+//!   剪贴板（`show --copy`）、用户双重确认的导出文件，以及用户显式 `use` 指定的
+//!   目标工具配置文件（[`supply`]，D59）——**任何终端输出一律掩码**。
 
 pub mod build_id;
 pub mod check_cache;
@@ -42,6 +44,7 @@ pub mod remote;
 pub mod search;
 pub mod store;
 pub mod subprocess;
+pub mod supply;
 pub mod sync;
 pub mod vault;
 

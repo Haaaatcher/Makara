@@ -115,6 +115,67 @@ pub enum Command {
         target: String,
     },
 
+    /// 把一条记录的凭证写入 AI 工具的配置文件（D59 生态适配，当前支持 Claude Code）。
+    // 文档注释保持单段：多段会被 clap 提升为 long_about（中文压过显式
+    // 英文 about，违背语言分层）；行为细节见 commands::use_target 的函数注释
+    /// 把一条记录的凭证写入 AI 工具的配置文件（D59 生态适配）。
+    #[command(
+        about = "Apply a record's credentials to an AI tool's config (currently Claude Code). The plan is shown first; the key lands in the config file, never on screen"
+    )]
+    Use {
+        /// 记录的 id（前缀即可）或名称；缺省在终端里交互选择。
+        #[arg(help = "Record id, prefix ok, or name; omit in a terminal to pick interactively")]
+        target: Option<String>,
+        /// 目标生态 id（缺省 = 唯一已接入目标）。
+        #[arg(long, help = "Target ecosystem id; omit to use the only supported one")]
+        into: Option<String>,
+        /// 项目级配置（默认 gitignore 的个人变体）。
+        #[arg(
+            long,
+            help = "Write the project-level config (default: the gitignored personal variant)"
+        )]
+        project: bool,
+        /// 项目级共享变体（通常会被提交进 git，需 --project）。
+        #[arg(
+            long,
+            help = "Use the project variant that is usually committed to git; requires --project"
+        )]
+        shared: bool,
+        /// ANTHROPIC_API_KEY 形态（默认 ANTHROPIC_AUTH_TOKEN）。
+        #[arg(
+            long,
+            help = "Use ANTHROPIC_API_KEY (x-api-key) instead of the default ANTHROPIC_AUTH_TOKEN (Bearer)"
+        )]
+        api_key: bool,
+        /// 主模型（D66：Main 型目标如 Codex；Claude 等逐别名目标不支持）。
+        #[arg(
+            long,
+            conflicts_with_all = ["model_map", "no_model"],
+            help = "Main model id (for targets with a single model key, e.g. Codex); per-alias targets require --model-map instead"
+        )]
+        model: Option<String>,
+        /// 按别名分派模型（D65 纯逐别名）：给定的别名才写；缺省在终端里逐别名交互映射。
+        #[arg(
+            long,
+            conflicts_with_all = ["model", "no_model"],
+            help = "Per-alias model mapping, e.g. opus=X,sonnet=Y,haiku=Z; aliases not mentioned stay untouched; omit in a terminal to map each alias interactively"
+        )]
+        model_map: Option<String>,
+        /// 跳过模型映射（网关透传模型别名时用）。
+        #[arg(
+            long,
+            conflicts_with_all = ["model", "model_map"],
+            help = "Do not touch the model mapping keys"
+        )]
+        no_model: bool,
+        /// 只展示计划，不写盘。
+        #[arg(long, help = "Show what would be written; do not touch any file")]
+        dry_run: bool,
+        /// 跳过全部确认（非交互脚本用）。
+        #[arg(long, help = "Skip all confirmations, for scripts")]
+        yes: bool,
+    },
+
     /// 编辑一条记录。
     #[command(about = "Edit a record field by field. Enter keeps the current value")]
     Edit {
@@ -244,6 +305,40 @@ pub fn run() -> myapikey_core::Result<()> {
         Command::Search { query } => commands::list(Some(&query)),
         Command::Show { target, copy } => commands::show(&target, copy),
         Command::Key { target } => commands::key(&target),
+        Command::Use {
+            target,
+            into,
+            project,
+            shared,
+            api_key,
+            model,
+            model_map,
+            no_model,
+            dry_run,
+            yes,
+        } => {
+            let scope = commands::UseScope::new(project, shared)?;
+            let model = if let Some(m) = model {
+                commands::ModelArg::MainModel(m)
+            } else if let Some(spec) = model_map {
+                commands::ModelArg::PerAlias(commands::parse_model_map(&spec)?)
+            } else if no_model {
+                commands::ModelArg::Skip
+            } else {
+                commands::ModelArg::Auto
+            };
+            commands::use_target(
+                target.as_deref(),
+                into.as_deref(),
+                &commands::UseFlags {
+                    scope,
+                    model,
+                    api_key_style: api_key,
+                    dry_run,
+                    yes,
+                },
+            )
+        }
         Command::Edit { target } => commands::edit(&target),
         Command::Delete { target } => commands::delete(&target),
         Command::Check { target } => commands::check(target.as_deref()),

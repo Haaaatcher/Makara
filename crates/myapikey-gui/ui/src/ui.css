@@ -1311,3 +1311,60 @@ html[data-theme="light"] .auth-banner { background: rgba(191, 137, 22, 0.10); }
   margin: 0;
   color: #3c3c45;
 }
+
+
+/* 下拉禁用项（D68）：未检测的工具——可见但不可选 */
+.dd-item-disabled {
+  color: var(--faint);
+  cursor: default;
+  pointer-events: none;
+}
+.dd-item-disabled .dd-check {
+  visibility: hidden;
+}
+
+/* 下拉选项的两行式条目（D70）：标题 + 灰色小字描述 */
+.dd-item .dd-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.dd-item .dd-item-desc {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: normal;
+}
+
+/* 警告提示框（D70）：琥珀底 + 左侧警示条，默认隐藏、有内容才显示 */
+.warn-box {
+  display: none;
+  background: rgba(216, 163, 58, 0.12);
+  border: 1px solid rgba(216, 163, 58, 0.4);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 4px 0 10px;
+  line-height: 1.55;
+}
+
+/* 品牌徽标（D70）：与应用图标同源的透明底蓝 mark（初始化/解锁行 + 主界面顶栏） */
+.brand-row img.brand-mark,
+.topbar-brand img.brand-mark {
+  width: 26px;
+  height: 26px;
+}
+/* 主界面顶栏：标题大、徽标同权重放大 */
+.topbar-brand img.brand-mark {
+  width: 40px;
+  height: 40px;
+}
+
+/* 设置行复选框（D70）：原生默认过小，放大并统一品牌色 */
+.setting-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}

@@ -10,6 +10,9 @@
 //! - 解锁密码只在内存（会话）与凭据库（TTL 记忆）；
 //! - 错误信息一律英文且不包含任何凭据。
 
+// 钥匙串授权引导（keychain_hint）仅 macOS 存在，Windows 编译时剥离，
+// 导入随 cfg 门控——否则 Windows clippy 报 unused import
+#[cfg(target_os = "macos")]
 use myapikey_core::build_id;
 use myapikey_core::check_cache::CheckCache;
 use myapikey_core::config::AppConfig;
@@ -17,6 +20,7 @@ use myapikey_core::github;
 use myapikey_core::keychain;
 use myapikey_core::model::{Protocol, Record, VaultData};
 use myapikey_core::paths::AppDirs;
+use myapikey_core::supply::{self, Fit};
 use myapikey_core::sync::{self, SyncOutcome};
 use myapikey_core::vault;
 use myapikey_core::{Error, Result};
@@ -335,11 +339,24 @@ pub fn remembered_status(sh: &Shared) -> Result<bool> {
 /// 解锁页是否应显示钥匙串授权引导（D57）：仅新构建后的首次调用为
 /// true——检测内部会写回构建指纹，确认一次后不再提示。一次性事件
 /// 故独立于 [`GuiState`] 状态快照。
+///
+/// **仅 macOS**（D70 用户实测反馈）：钥匙串 ACL 授权弹窗是 macOS 特有
+/// 机制，Windows Credential Manager / Linux Secret Service 无此弹窗，
+/// 横幅不应出现（D54 平台保障：非 macOS 行为零改动）。
+#[must_use]
 pub fn keychain_hint(sh: &Shared) -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    build_id::is_new_build(&sh.dirs.config_dir, &exe)
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        build_id::is_new_build(&sh.dirs.config_dir, &exe)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = sh;
+        false
+    }
 }
 
 /// 手动输入解锁密码解锁；成功后按 TTL 记忆。
@@ -531,7 +548,7 @@ pub fn save_record(
     sh: &Shared,
     input: RecordInput,
     editing_id: Option<&str>,
-) -> Result<RecordView> {
+) -> Result<SaveResultView> {
     let name = input.name.trim().to_string();
     let base_url = input.base_url.trim().to_string();
     let api_key = input.api_key.trim().to_string();
@@ -620,55 +637,64 @@ pub fn save_record(
         (session.passphrase.clone(), data, updated)
     };
 
-    // 跨进程实例锁（与 CLI 互斥）内完成落盘
-    {
+    // 跨进程实例锁（与 CLI 互斥）内完成落盘；推送结果随作用域带出
+    let (pushed, push_error, standalone) = {
         let _instance = myapikey_core::lock::acquire(&sh.dirs)?;
         let mut cfg = sh.config();
         let remote = remote_of(sh)?;
         let remote_dyn: Option<&dyn myapikey_core::remote::SyncStore> = remote
             .as_ref()
             .map(|r| r as &dyn myapikey_core::remote::SyncStore);
-        // 认证失败 → 刷新令牌静默续期 → 重试一次（重试会现读新凭据）
-        match sync::save(
-            &sh.dirs,
-            &passphrase,
-            &data,
-            remote_dyn,
-            cfg.auto_push,
-            &mut cfg,
-        ) {
-            Err(e) if myapikey_core::sync::is_auth_error(&e.to_string()) => {
-                match try_refresh_and_retry_setup(sh) {
-                    Ok(()) => {
-                        let mut cfg = sh.config();
-                        let remote = remote_of(sh)?;
-                        let remote_dyn: Option<&dyn myapikey_core::remote::SyncStore> = remote
-                            .as_ref()
-                            .map(|r| r as &dyn myapikey_core::remote::SyncStore);
-                        sync::save(
-                            &sh.dirs,
-                            &passphrase,
-                            &data,
-                            remote_dyn,
-                            cfg.auto_push,
-                            &mut cfg,
-                        )?;
-                    }
-                    Err(re) => {
-                        myapikey_core::log::error("gui", &format!("token refresh failed: {re}"));
-                        return Err(Error::Usage(format!(
-                            "{e} — re-bind from the banner on the main page"
-                        )));
+        // 认证失败 → 刷新令牌静默续期 → 重试一次（重试会现读新凭据）。
+        // D67 修复：SyncOutcome（pushed / push_error）不再丢弃——推送结果
+        // 随 SaveResultView 回前端如实反馈（CLI 同路径有 "Synced to GitHub"
+        // 提示，GUI 此前静默吞掉，用户无从得知是否已推送）
+        let outcome: myapikey_core::sync::SyncOutcome = {
+            match sync::save(
+                &sh.dirs,
+                &passphrase,
+                &data,
+                remote_dyn,
+                cfg.auto_push,
+                &mut cfg,
+            ) {
+                Err(e) if myapikey_core::sync::is_auth_error(&e.to_string()) => {
+                    match try_refresh_and_retry_setup(sh) {
+                        Ok(()) => {
+                            let mut cfg = sh.config();
+                            let remote = remote_of(sh)?;
+                            let remote_dyn: Option<&dyn myapikey_core::remote::SyncStore> = remote
+                                .as_ref()
+                                .map(|r| r as &dyn myapikey_core::remote::SyncStore);
+                            sync::save(
+                                &sh.dirs,
+                                &passphrase,
+                                &data,
+                                remote_dyn,
+                                cfg.auto_push,
+                                &mut cfg,
+                            )?
+                        }
+                        Err(re) => {
+                            myapikey_core::log::error(
+                                "gui",
+                                &format!("token refresh failed: {re}"),
+                            );
+                            return Err(Error::Usage(format!(
+                                "{e} — re-bind from the banner on the main page"
+                            )));
+                        }
                     }
                 }
+                other => other?,
             }
-            other => {
-                other?;
-            }
-        }
-    }
+        };
+        (outcome.pushed, outcome.push_error, {
+            outcome.remote.as_deref().is_none_or(str::is_empty)
+        })
+    };
 
-    // 回写会话 + 返回视图
+    // 回写会话 + 返回视图（含推送结果）
     let mut g = enter(&sh.inner);
     let session = session_of(&mut g)?;
     session.data = data;
@@ -679,7 +705,12 @@ pub fn save_record(
         .find(|r| r.id == updated_id)
         .ok_or_else(|| Error::NotFound(updated_id.to_string()))?;
     let view = to_view(r, &CheckCache::load(&sh.dirs));
-    Ok(view)
+    Ok(SaveResultView {
+        record: view,
+        pushed,
+        push_error,
+        standalone,
+    })
 }
 
 /// 删除记录（墓碑）。
@@ -1838,6 +1869,396 @@ pub fn init_finish(sh: &Shared, passphrase: &str) -> Result<InitStage> {
     }
 }
 
+// ===== 生态供给（D59/D65：把记录写入 AI 工具的配置文件）=====
+//
+// 全部语义（备份 / 原子写 / 损坏拒写 / 掩码 / 协议族门控）都在 core
+// `supply`；本节只做「会话取记录明文 + 参数解析 + 视图组装」。发给前端
+// 的字符串永远不含明文 key——旧值与写入值一律走 core 的掩码展示。
+
+/// 已接入的生态目标（Apply 对话框第一步的选项）。
+#[derive(Serialize)]
+pub struct SupplyTargetView {
+    /// 稳定标识（CLI `--into` 同款取值，如 "claude"）。
+    pub id: String,
+    /// 人读名称（如 "Claude Code"）。
+    pub name: String,
+    /// 本机是否检测到（D68：未检测项照样显示但不可选）。
+    pub detected: bool,
+}
+
+/// 供给范围选项：Scope 标识 + target 提供的文案（D62 生态知识单源，
+/// GUI 原样渲染，不做翻译复述）。
+#[derive(Serialize)]
+pub struct SupplyScopeView {
+    /// Scope 标识："user" / "project-local" / "project-shared"。
+    pub scope: String,
+    /// 选项文案（target 提供）。
+    pub label: String,
+}
+
+/// 凭证形态选项。
+#[derive(Serialize)]
+pub struct SupplyStyleView {
+    /// 对应 [`supply::ApplyOptions::api_key_style`] 的取值。
+    pub api_key_style: bool,
+    /// 选项文案（target 提供）。
+    pub label: String,
+}
+
+/// 目标的交互选项集合（顺序即展示顺序，首项为默认）。
+#[derive(Serialize)]
+pub struct SupplyOptionsView {
+    /// 支持的范围。
+    pub scopes: Vec<SupplyScopeView>,
+    /// 凭证形态选项（`None` = 该目标无形态之分，前端不渲染该区）。
+    pub styles: Option<Vec<SupplyStyleView>>,
+    /// 模型交互形态（D66）：`"aliases"` = 三别名下拉（Claude）、`"main"`
+    /// = 单主模型下拉（Codex）、`null` = 不消费模型。
+    pub model_kind: Option<String>,
+    /// 本机是否检测到该工具（D67 补 GUI 缺口：目录级粗检测，未检测到时
+    /// 前端提示——写入仍允许，装好即生效）。
+    pub detected: bool,
+    /// 配置面环境警示（D70：如 Codex 的 ChatGPT 登录态压过网关认证）。
+    pub warnings: Vec<SupplyWarningView>,
+}
+
+/// 环境警示条目：稳定键（前端双语查表）+ 英文文案（回退）。
+#[derive(Serialize)]
+pub struct SupplyWarningView {
+    /// 稳定提示键。
+    pub key: String,
+    /// 英文文案（回退）。
+    pub message: String,
+}
+
+/// 保存结果（D67 修复：推送结果不再被吞——前端据此如实反馈）。
+#[derive(Serialize)]
+pub struct SaveResultView {
+    /// 保存后的记录视图（掩码）。
+    pub record: RecordView,
+    /// 是否已推送远端（auto_push 开 + 已绑定 + 推送成功）。
+    pub pushed: bool,
+    /// 推送失败原因（已保存本地、待「立即同步」补推）。
+    pub push_error: Option<String>,
+    /// 单机模式（未绑定远端——推送无从谈起）。
+    pub standalone: bool,
+}
+
+/// 计划/结果里的一个字段（敏感值已掩码——明文不出后端）。
+#[derive(Serialize)]
+pub struct SupplyFieldView {
+    /// 字段标签（如 "base url" / "env.ANTHROPIC_AUTH_TOKEN"）。
+    pub label: String,
+    /// 展示值。
+    pub value: String,
+}
+
+/// 供给计划 / 结果视图（与 CLI 计划同源的渲染形态）。
+#[derive(Serialize)]
+pub struct SupplyPlanView {
+    /// 目标配置文件路径。
+    pub path: String,
+    /// 备份文件路径（原文件存在即有备份守护；dry-run 时同样预告）。
+    pub backup: Option<String>,
+    /// 本次是否新建备份（false = 沿用首次接入时的备份）。
+    pub backup_new: bool,
+    /// 将被替换的旧值（掩码）。
+    pub old: Vec<SupplyFieldView>,
+    /// 本次写入（掩码）。
+    pub set: Vec<SupplyFieldView>,
+    /// 本次移除的字段路径（如切换 token 形态时清掉的另一形态旧值）。
+    pub removes: Vec<String>,
+    /// 需要随计划展示的提示（如 Codex：顶层 model_provider 被覆盖）。
+    pub note: Option<String>,
+}
+
+/// 前端提交的模型映射（null = 该别名不动，D65 纯逐别名）。
+#[derive(Deserialize, Default)]
+pub struct SupplyMappingInput {
+    #[serde(default)]
+    pub opus: Option<String>,
+    #[serde(default)]
+    pub sonnet: Option<String>,
+    #[serde(default)]
+    pub haiku: Option<String>,
+}
+
+/// 供给请求（preview / apply 共用）。
+#[derive(Deserialize)]
+pub struct SupplyRequest {
+    /// 记录 id（UUID）。
+    pub record_id: String,
+    /// 目标 id（如 "claude"）。
+    pub target_id: String,
+    /// 范围标识："user" / "project-local" / "project-shared"。
+    pub scope: String,
+    /// 凭证形态（false = AUTH_TOKEN 默认形态）。
+    #[serde(default)]
+    pub api_key_style: bool,
+    /// 模型映射（null 别名不动；Aliases 型目标消费）。
+    #[serde(default)]
+    pub mapping: SupplyMappingInput,
+    /// 主模型（D66：Main 型目标如 Codex 消费；null 不动该键）。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 项目根目录（项目级范围必填；用户级忽略）。
+    #[serde(default)]
+    pub project_root: Option<String>,
+}
+
+/// Scope 标识字符串 → core [`supply::Scope`]。
+fn parse_supply_scope(s: &str) -> Result<supply::Scope> {
+    match s {
+        "user" => Ok(supply::Scope::User),
+        "project-local" => Ok(supply::Scope::ProjectLocal),
+        "project-shared" => Ok(supply::Scope::ProjectShared),
+        other => Err(Error::Usage(format!("unknown scope '{other}'"))),
+    }
+}
+
+/// 组装掩码字段视图（secret = true 时值走 core 掩码）。
+fn supply_field(label: &str, value: &str, secret: bool) -> SupplyFieldView {
+    SupplyFieldView {
+        label: label.to_string(),
+        value: if secret {
+            supply::mask_secret(value)
+        } else {
+            value.to_string()
+        },
+    }
+}
+
+/// 已接入的生态目标列表（含逐目标检测；D68：未检测照样显示但不可选）。
+#[must_use]
+pub fn supply_targets() -> Vec<SupplyTargetView> {
+    // HOME 不可得时降级为"已检测"——不因基础设施失败把界面全禁掉
+    let home = supply::user_home_dir().unwrap_or_default();
+    supply::all_targets()
+        .iter()
+        .map(|t| SupplyTargetView {
+            id: t.id().to_string(),
+            name: t.display_name().to_string(),
+            detected: t.detect(&home),
+        })
+        .collect()
+}
+
+/// 目标的交互选项（范围集合与文案、形态选项；D62 目标驱动，GUI 不自带
+/// 任何生态解释）。
+///
+/// # Errors
+/// 目标 id 不存在。
+pub fn supply_options_with_home(_sh: &Shared, target_id: &str) -> Result<SupplyOptionsView> {
+    let home = supply::user_home_dir()?;
+    supply_options_with_home_at(&home, target_id)
+}
+
+/// 供给选项组装（home 可注入，测试用）。
+fn supply_options_with_home_at(
+    home: &std::path::Path,
+    target_id: &str,
+) -> Result<SupplyOptionsView> {
+    let t = supply::find_target(target_id)
+        .ok_or_else(|| Error::Usage(format!("unknown target '{target_id}'")))?;
+    Ok(SupplyOptionsView {
+        scopes: t
+            .supported_scopes()
+            .into_iter()
+            .map(|(s, label)| SupplyScopeView {
+                scope: match s {
+                    supply::Scope::User => "user".to_string(),
+                    supply::Scope::ProjectLocal => "project-local".to_string(),
+                    supply::Scope::ProjectShared => "project-shared".to_string(),
+                },
+                label,
+            })
+            .collect(),
+        styles: t.credential_styles().map(|v| {
+            v.into_iter()
+                .map(|(api_key_style, label)| SupplyStyleView {
+                    api_key_style,
+                    label,
+                })
+                .collect()
+        }),
+        model_kind: t.model_kind().map(|k| match k {
+            supply::ModelKind::Aliases => "aliases".to_string(),
+            supply::ModelKind::Main => "main".to_string(),
+        }),
+        detected: t.detect(home),
+        warnings: t
+            .config_warnings(home)
+            .into_iter()
+            .map(|w| SupplyWarningView {
+                key: w.key.to_string(),
+                message: w.message,
+            })
+            .collect(),
+    })
+}
+
+/// 供给共用的执行入口：会话取记录明文 → 组装 [`supply::ApplyOptions`]
+/// → 调 core（dry_run=true 只出计划）。
+///
+/// # Errors
+/// 未解锁 / 记录不存在 / 目标不存在 / scope 非法 / 目标配置损坏拒写 /
+/// 写盘失败。
+fn supply_run(sh: &Shared, req: &SupplyRequest, dry_run: bool) -> Result<SupplyPlanView> {
+    let target = supply::find_target(&req.target_id)
+        .ok_or_else(|| Error::Usage(format!("unknown target '{}'", req.target_id)))?;
+    let scope = parse_supply_scope(&req.scope)?;
+
+    let mut g = enter(&sh.inner);
+    let session = session_of(&mut g)?;
+    let id = uuid::Uuid::parse_str(&req.record_id)
+        .map_err(|_| Error::Usage("invalid record id".into()))?;
+    let record = session
+        .data
+        .records
+        .iter()
+        .find(|r| r.id == id && !r.is_deleted())
+        .ok_or_else(|| Error::NotFound(req.record_id.clone()))?;
+
+    // 协议族门控（D59/D69，与 CLI 同源）：No 硬拒——写必败配置没有
+    // 可用性理由；Confirm 由前端勾选确认后调用
+    if let supply::Fit::No { message, .. } = target.fit(&record.protocol) {
+        return Err(Error::Usage(message));
+    }
+
+    let home = supply::user_home_dir()?;
+    let root = match req.project_root.as_deref() {
+        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        // GUI 无 cwd（窗口应用）：项目级必须有用户选定的文件夹，缺失时
+        // 兜底空串只会得到无意义路径——如实交给 core 的路径语义处理
+        _ => std::path::PathBuf::new(),
+    };
+    let path = target.settings_path(scope, &home, &root);
+
+    // 旧值（掩码后发前端；读取失败——配置损坏——直接上抛中止）
+    let current = target.current(&path)?;
+    let mut old = Vec::new();
+    if let Some(c) = current {
+        if let Some(u) = &c.base_url {
+            old.push(supply_field("base url", u, false));
+        }
+        if let Some(t) = &c.auth_token {
+            old.push(supply_field("auth token", t, true));
+        }
+        if let Some(k) = &c.api_key {
+            old.push(supply_field("api key", k, true));
+        }
+        if let Some(m) = &c.opus_model {
+            old.push(supply_field("opus alias", m, false));
+        }
+        if let Some(m) = &c.sonnet_model {
+            old.push(supply_field("sonnet alias", m, false));
+        }
+        if let Some(m) = &c.haiku_model {
+            old.push(supply_field("haiku alias", m, false));
+        }
+        if let Some(t) = &c.bearer_token {
+            old.push(supply_field("bearer token", t, true));
+        }
+        if let Some(m) = &c.model {
+            old.push(supply_field("model", m, false));
+        }
+        if let Some(p) = &c.model_provider {
+            old.push(supply_field("model provider", p, false));
+        }
+    }
+
+    let opts = supply::ApplyOptions {
+        api_key_style: req.api_key_style,
+        model_mapping: supply::ModelMapping {
+            opus: req.mapping.opus.clone(),
+            sonnet: req.mapping.sonnet.clone(),
+            haiku: req.mapping.haiku.clone(),
+        },
+        model: req.model.clone(),
+    };
+    let outcome = target.apply(record, &path, opts, dry_run)?;
+
+    Ok(SupplyPlanView {
+        path: outcome.path.display().to_string(),
+        backup: outcome.backup.as_ref().map(|b| b.display().to_string()),
+        backup_new: outcome.backup_new,
+        old,
+        set: outcome
+            .writes
+            .iter()
+            .map(|w| SupplyFieldView {
+                label: w.path.clone(),
+                value: w.display(),
+            })
+            .collect(),
+        removes: outcome.removes.clone(),
+        note: outcome.note.clone(),
+    })
+}
+
+/// 计划预览（dry-run，不落盘）。
+///
+/// # Errors
+/// 见 [`supply_run`]。
+pub fn supply_preview(sh: &Shared, req: &SupplyRequest) -> Result<SupplyPlanView> {
+    supply_run(sh, req, true)
+}
+
+/// 协议适配判定视图（前端据此禁用 Apply / 展示确认警告）。
+#[derive(Serialize)]
+pub struct SupplyFitView {
+    /// `"yes"` / `"confirm"` / `"no"`（与 CLI [`supply::Fit`] 三态对应）。
+    pub verdict: String,
+    /// 稳定提示键（D70：GUI 双语字典查表键；None = 无原因）。
+    pub reason_key: Option<String>,
+    /// 英文原因（CLI 同源文案；前端优先按 reason_key 走双语）。
+    pub reason: Option<String>,
+}
+
+/// 查询「记录 × 目标」的协议适配判定（D69：GUI 补齐协议族门控缺口）。
+///
+/// # Errors
+/// 未解锁 / 记录不存在 / 目标不存在。
+pub fn supply_fit(sh: &Shared, record_id: &str, target_id: &str) -> Result<SupplyFitView> {
+    let target = supply::find_target(target_id)
+        .ok_or_else(|| Error::Usage(format!("unknown target '{target_id}'")))?;
+    let mut g = enter(&sh.inner);
+    let session = session_of(&mut g)?;
+    let id =
+        uuid::Uuid::parse_str(record_id).map_err(|_| Error::Usage("invalid record id".into()))?;
+    let record = session
+        .data
+        .records
+        .iter()
+        .find(|r| r.id == id && !r.is_deleted())
+        .ok_or_else(|| Error::NotFound(record_id.to_string()))?;
+    Ok(match target.fit(&record.protocol) {
+        Fit::Yes => SupplyFitView {
+            verdict: "yes".to_string(),
+            reason_key: None,
+            reason: None,
+        },
+        Fit::No { key, message } => SupplyFitView {
+            verdict: "no".to_string(),
+            reason_key: Some(key.to_string()),
+            reason: Some(message),
+        },
+        Fit::Confirm { key, message } => SupplyFitView {
+            verdict: "confirm".to_string(),
+            reason_key: Some(key.to_string()),
+            reason: Some(message),
+        },
+    })
+}
+
+/// 实际写入（写前备份 + 原子写）。
+///
+/// # Errors
+/// 见 [`supply_run`]。
+pub fn supply_apply(sh: &Shared, req: &SupplyRequest) -> Result<SupplyPlanView> {
+    supply_run(sh, req, false)
+}
+
 #[cfg(test)]
 mod tests {
     //! ops 层集成测试：MYAPIKEY_HOME 指向临时目录；auto_lock_minutes=0、
@@ -2142,7 +2563,8 @@ mod tests {
             },
             None,
         )
-        .expect("新增失败");
+        .expect("新增失败")
+        .record;
         assert!(created.masked_key.contains("..."), "列表视图必须是掩码 key");
         // 回归（2026-10-25 反馈）：新建记录的备注曾被整个丢弃
         assert_eq!(
@@ -2163,7 +2585,8 @@ mod tests {
             },
             Some(&created.id),
         )
-        .expect("编辑失败");
+        .expect("编辑失败")
+        .record;
         assert_eq!(updated.name, "Test2");
         assert_eq!(updated.protocol, "custom:gateway");
 
@@ -2181,7 +2604,8 @@ mod tests {
             },
             Some(&created.id),
         )
-        .expect("仅改备注失败");
+        .expect("仅改备注失败")
+        .record;
         assert_eq!(notes_only.notes.as_deref(), Some("just a note"));
         // key 未变：reveal 出来的仍是上一步写入的 key
         assert_eq!(

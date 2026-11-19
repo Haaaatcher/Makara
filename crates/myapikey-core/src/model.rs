@@ -88,6 +88,21 @@ impl Protocol {
         }
     }
 
+    /// 完整形态名：协议族 + API 形态全称。供**没有 hover 补充**的展示
+    /// 场景（CLI 记录选择器等）区分同族的不同协议——OpenAI / Anthropic
+    /// 各有两种形态，只显示公司名无法区分（2026-11-19 用户反馈）。
+    /// 与 GUI 徽标 hover（`protoLabel`）及编辑抽屉协议选项用词一致。
+    #[must_use]
+    pub fn full_label(&self) -> String {
+        match self {
+            Protocol::OpenAi => "OpenAI Responses".to_string(),
+            Protocol::OpenAiChat => "OpenAI Chat".to_string(),
+            Protocol::Anthropic => "Anthropic Messages".to_string(),
+            Protocol::AnthropicComplete => "Anthropic Complete".to_string(),
+            Protocol::Custom { name } => format!("custom:{name}"),
+        }
+    }
+
     /// 搜索匹配词（小写、空格分隔，供 `core::search` 的协议字段使用）：
     /// 存储标签 + 完整形态词——搜 "openai"、"responses"、"chat"、
     /// "anthropic"、"messages"、"complete"、自定义名都能命中。
@@ -377,6 +392,26 @@ mod tests {
             Protocol::Custom {
                 name: "Azure".into()
             }
+        );
+    }
+
+    /// 完整形态名（2026-11-19 用户反馈）：族名 + API 形态全称，同族两
+    /// 协议在选择器等无 hover 场景可区分。
+    #[test]
+    fn full_label_shows_api_form() {
+        assert_eq!(Protocol::OpenAi.full_label(), "OpenAI Responses");
+        assert_eq!(Protocol::OpenAiChat.full_label(), "OpenAI Chat");
+        assert_eq!(Protocol::Anthropic.full_label(), "Anthropic Messages");
+        assert_eq!(
+            Protocol::AnthropicComplete.full_label(),
+            "Anthropic Complete"
+        );
+        assert_eq!(
+            Protocol::Custom {
+                name: "azure".into()
+            }
+            .full_label(),
+            "custom:azure"
         );
     }
 

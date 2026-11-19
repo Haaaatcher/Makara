@@ -9,6 +9,9 @@ use crate::table;
 use myapikey_core::model::{Protocol, Record, VaultData};
 use myapikey_core::paths::AppDirs;
 use myapikey_core::probe;
+use myapikey_core::supply::{
+    self, mask_secret, ApplyOptions, ApplyOutcome, Fit, ModelKind, ModelMapping, Scope, Target,
+};
 use myapikey_core::sync::{self, SyncOutcome};
 use myapikey_core::{check_cache, config::AppConfig, keychain, lock, vault, Error, Result};
 use std::path::Path;
@@ -648,6 +651,526 @@ fn copy_to_clipboard(text: &str) {
                 "Clipboard copy failed: {e}\n  Try again, or use `makara export` (asks twice) to write it to a file."
             ));
         }
+    }
+}
+
+/// `use` 的供给范围（CLI 侧概念；`--project` / `--shared` 校验后转 core [`Scope`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseScope {
+    /// 用户级配置（该工具全局生效）。
+    User,
+    /// 项目级个人变体（工具约定 gitignore、不进版本库）。
+    ProjectLocal,
+    /// 项目级共享变体（通常被提交，明文 key 有随仓库泄露风险）。
+    ProjectShared,
+}
+
+impl UseScope {
+    /// 由 `--project` / `--shared` 组装；共享变体脱离 `--project` 视为参数错误。
+    ///
+    /// # Errors
+    /// `shared` 为 `true` 而 `project` 为 `false`。
+    pub fn new(project: bool, shared: bool) -> Result<Self> {
+        match (project, shared) {
+            (false, false) => Ok(Self::User),
+            (true, false) => Ok(Self::ProjectLocal),
+            (true, true) => Ok(Self::ProjectShared),
+            (false, true) => Err(Error::Usage("--shared requires --project".into())),
+        }
+    }
+}
+
+impl From<UseScope> for Scope {
+    fn from(s: UseScope) -> Self {
+        match s {
+            UseScope::User => Self::User,
+            UseScope::ProjectLocal => Self::ProjectLocal,
+            UseScope::ProjectShared => Self::ProjectShared,
+        }
+    }
+}
+
+/// `use` 的模型映射来源（D65 纯逐别名 + D66 主模型；只动别名/主模型层）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelArg {
+    /// 缺省：交互逐别名映射（三菜单，每项可 Leave untouched）；非交互
+    /// 拒绝——映射是逐别名的用户决策，不猜（单模型也不自动）。
+    Auto,
+    /// 主模型（`--model`，D66）：仅 Main 型目标（Codex）接受；Aliases 型
+    /// 目标报错引导用 `--model-map`——语义由 target 决定，不做"统一映射"。
+    MainModel(String),
+    /// 按别名分派（`--model-map`）：给定的别名才写，未提及的不动。
+    PerAlias(ModelMapping),
+    /// 跳过映射（`--no-model`），映射键不碰——网关透传模型别名（全家桶）
+    /// 时用。
+    Skip,
+}
+
+/// `use` 命令的开关集合（聚合 bool 参数；范围/模型单列见 [`UseScope`] / [`ModelArg`]）。
+pub struct UseFlags {
+    /// 供给范围（已校验）。
+    pub scope: UseScope,
+    /// 模型映射来源（D60）。
+    pub model: ModelArg,
+    /// ANTHROPIC_API_KEY 形态（默认 ANTHROPIC_AUTH_TOKEN）。
+    pub api_key_style: bool,
+    /// 只展示计划不写盘。
+    pub dry_run: bool,
+    /// 跳过全部确认。
+    pub yes: bool,
+}
+
+/// `use`：把一条记录的凭证供给到 AI 工具的配置文件（D59 生态适配）。
+///
+/// 参数与交互双轨（D61）：显式参数永远优先，交互只补缺省——记录未指名时
+/// 交互选择器、范围/token 形态未给 flag 时菜单、模型映射 Auto 时菜单
+/// （含跳过项）；`--yes` / 非 TTY 下全程纯参数语义，不出任何菜单。
+/// 计划先行（含被替换旧值，key 掩码）→ 单次确认 → core 备份 + 原子写。
+///
+/// # Errors
+/// 未初始化、记录不存在、目标 id 不存在、协议族不适用（`Fit::No`）、
+/// 非 TTY 下缺必要参数（记录 / 多模型）、未给 `--yes`、core 写盘失败
+/// （含目标配置损坏拒写）。
+pub fn use_target(target: Option<&str>, into: Option<&str>, flags: &UseFlags) -> Result<()> {
+    // 交互判据（D61）：TTY 且非 --yes。--yes = 跳过全部确认与菜单
+    let interactive = prompt::is_interactive() && !flags.yes;
+
+    let c = ctx()?;
+    require_init(&c)?;
+    let (passphrase, _) = prompt::unlock(&c.dirs)?;
+    let data = load_vault(&c, &passphrase)?;
+
+    // 目标最先问（D63/D68）：检测前置——它是后续所有问题的语境
+    let home = supply::user_home_dir()?;
+    let tgt = pick_target(into, interactive, &home)?;
+    let idx = pick_record(&data, target, interactive)?;
+    let record = data
+        .records
+        .get(idx)
+        .ok_or_else(|| Error::NotFound(target.unwrap_or("<picked>").into()))?;
+
+    if !gate_protocol(tgt.as_ref(), &record.protocol, flags.yes)? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let scope = ask_scope(flags.scope, interactive, tgt.as_ref())?;
+    let api_key_style = ask_token_style(flags.api_key_style, interactive, tgt.as_ref())?;
+
+    let path = tgt.settings_path(Scope::from(scope), &home, &std::env::current_dir()?);
+
+    // 工具检测兜底（D68：菜单已不可选未检测项，此门只拦显式 `--into`；
+    // dry-run 无写盘风险，跳过）
+    if !flags.dry_run && !gate_detect(tgt.as_ref(), &home, flags.yes)? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // 配置面环境警示（D70：如 Codex 的 ChatGPT 登录态压过网关认证）
+    for w in tgt.config_warnings(&home) {
+        prompt::warn(&w.message);
+    }
+
+    let (model_mapping, main_model, mapping_note) =
+        resolve_model(&flags.model, &record.models, interactive, tgt.model_kind())?;
+
+    // 计划先行：dry-run 与实际写走同一份 core 计划，展示被替换的旧值
+    let opts = ApplyOptions {
+        model_mapping,
+        model: main_model,
+        api_key_style,
+    };
+    let plan = tgt.apply(record, &path, opts.clone(), true)?;
+    print_plan(scope, tgt.as_ref(), &path, &plan)?;
+    if let Some(reason) = mapping_note {
+        println!("  Model mapping: not touched ({reason})");
+    }
+    if let Some(note) = &plan.note {
+        println!("  Note   : {note}");
+    }
+
+    if scope == UseScope::ProjectShared {
+        prompt::warn(
+            "Shared project config is usually committed to git. The key may leak through the repository.",
+        );
+    }
+
+    if flags.dry_run {
+        println!("Dry run; nothing written.");
+        return Ok(());
+    }
+
+    if !interactive && !flags.yes {
+        return Err(Error::Usage(
+            "no TTY detected; rerun with --yes to apply without prompting".into(),
+        ));
+    }
+    if !flags.yes && !confirm_apply() {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // 日志只落路径与目标 id，绝不落 key（AGENTS.md 铁律）
+    myapikey_core::log::info(
+        "cli",
+        &format!("supply apply -> {} ({})", plan.path.display(), tgt.id()),
+    );
+    let outcome = tgt.apply(record, &path, opts, false)?;
+    prompt::ok(&format!("Applied to {}", outcome.path.display()));
+    // 只在本次新落备份时提示；沿用旧备份（backup_new = false）已在计划里标注
+    if outcome.backup_new {
+        if let Some(b) = &outcome.backup {
+            println!("  Backup: {}", b.display());
+        }
+    }
+    println!(
+        "  Restart {} sessions to pick up the new environment.",
+        tgt.display_name()
+    );
+    Ok(())
+}
+
+/// 记录定位（D61）：显式 target 走既有解析；无 target 时交互选择器
+/// （按最近更新倒序，与 `list` 一致），非交互报错要求 id/名称。
+/// 返回 `data.records` 下标。
+///
+/// # Errors
+/// 记录不存在；无 target 且非交互。
+fn pick_record(data: &VaultData, target: Option<&str>, interactive: bool) -> Result<usize> {
+    if let Some(t) = target {
+        return resolve_target(data, t);
+    }
+    if !interactive {
+        return Err(Error::Usage(
+            "record id or name is required in non-interactive shells".into(),
+        ));
+    }
+    let alive: Vec<Record> = data.alive_records().cloned().collect();
+    let id = prompt::select_record(&alive)?;
+    data.find(&id.to_string())
+        .ok_or_else(|| Error::NotFound(id.to_string()))
+}
+
+/// 范围决策（D62 目标驱动）：`--project` / `--shared` 显式给过（解析结果
+/// 非默认用户级）直达，但目标不支持该范围则报错；都未给且交互时按
+/// [`Target::supported_scopes`] 出菜单（选项集合、文案、顺序全归 target，
+/// 首项即默认）；非交互 / `--yes` 取首项默认。CLI 不硬编码任何生态的解释。
+fn ask_scope(flagged: UseScope, interactive: bool, tgt: &dyn Target) -> Result<UseScope> {
+    let supported = tgt.supported_scopes();
+    if flagged != UseScope::User {
+        let chosen = Scope::from(flagged);
+        if !supported.iter().any(|(s, _)| *s == chosen) {
+            return Err(Error::Usage(format!(
+                "{} does not support this scope for its config",
+                tgt.display_name()
+            )));
+        }
+        return Ok(flagged);
+    }
+    if !interactive || supported.len() == 1 {
+        // 目标只有一个范围（如 Codex 无项目级配置）时菜单无意义，直接默认
+        return Ok(to_use_scope(supported[0].0));
+    }
+    let labels: Vec<String> = supported.iter().map(|(_, l)| l.clone()).collect();
+    let idx = prompt::select_from(&labels, "Where should this credential apply?")?;
+    Ok(to_use_scope(supported[idx].0))
+}
+
+/// token 形态决策（D62 目标驱动）：`--api-key` 显式给过直达；未给且交互
+/// 时按 [`Target::credential_styles`] 出菜单（首项即默认）；目标无形态
+/// 之分（`None`）或非交互 / `--yes` 时维持默认形态。
+fn ask_token_style(flagged: bool, interactive: bool, tgt: &dyn Target) -> Result<bool> {
+    let Some(styles) = tgt.credential_styles() else {
+        return Ok(flagged);
+    };
+    if flagged || !interactive {
+        return Ok(flagged);
+    }
+    let labels: Vec<String> = styles.iter().map(|(_, l)| l.clone()).collect();
+    let idx = prompt::select_from(&labels, "Which credential style?")?;
+    Ok(styles[idx].0)
+}
+
+/// core [`Scope`] → CLI [`UseScope`]（菜单选择的回转）。
+fn to_use_scope(s: Scope) -> UseScope {
+    match s {
+        Scope::User => UseScope::User,
+        Scope::ProjectLocal => UseScope::ProjectLocal,
+        Scope::ProjectShared => UseScope::ProjectShared,
+    }
+}
+
+/// 模型映射决策（D65 纯逐别名）：返回（映射集合，"映射未动"的计划注记
+/// ——Some 时映射必为空）。
+///
+/// `--model-map` / `--no-model` 显式直达。Auto 交互按 [`ModelKind`] 分支：
+/// `Aliases` = opus / sonnet / haiku 三菜单（选项 = 记录模型 + "Leave
+/// untouched"，全留空 = 不动并注明）；`Main` = 单菜单选主模型（Codex）。
+/// Auto 非交互拒绝——映射是逐别名的用户决策，不猜（单模型也不自动）。
+/// 记录无模型 → 跳过并注明出路。
+///
+/// # Errors
+/// Auto 且非交互（未给 `--model-map` / `--no-model`）。
+fn resolve_model(
+    arg: &ModelArg,
+    models: &[String],
+    interactive: bool,
+    kind: Option<ModelKind>,
+) -> Result<(ModelMapping, Option<String>, Option<&'static str>)> {
+    match arg {
+        ModelArg::PerAlias(map) => Ok((map.clone(), None, None)),
+        ModelArg::MainModel(m) => match kind {
+            Some(ModelKind::Main) | None => Ok((
+                ModelMapping::default(),
+                Some(m.clone()),
+                None,
+            )),
+            Some(ModelKind::Aliases) => Err(Error::Usage(
+                "this target maps models per-alias; use --model-map opus=X,sonnet=Y,haiku=Z"
+                    .into(),
+            )),
+        },
+        ModelArg::Skip => Ok((
+            ModelMapping::default(),
+            None,
+            Some("--no-model"),
+        )),
+        ModelArg::Auto if models.is_empty() => Ok((
+            ModelMapping::default(),
+            None,
+            Some("record has no models; add models via `makara edit` or pass --model-map"),
+        )),
+        ModelArg::Auto if !interactive => Err(Error::Usage(
+            "model mapping is a user decision; pass --model-map <spec> or --no-model in non-interactive shells"
+                .into(),
+        )),
+        ModelArg::Auto => match kind {
+            Some(ModelKind::Aliases) => {
+                let mut map = ModelMapping::default();
+                for (role, slot) in [
+                    ("opus", &mut map.opus),
+                    ("sonnet", &mut map.sonnet),
+                    ("haiku", &mut map.haiku),
+                ] {
+                    let mut labels = models.to_vec();
+                    labels.push("Leave untouched (keep existing)".to_string());
+                    let question = format!("Map the {role} alias to:");
+                    let idx = prompt::select_from(&labels, question.as_str())?;
+                    if idx < models.len() {
+                        *slot = Some(models[idx].clone());
+                    }
+                }
+                if map.is_empty() {
+                    Ok((map, None, Some("all aliases left untouched")))
+                } else {
+                    Ok((map, None, None))
+                }
+            }
+            Some(ModelKind::Main) | None => {
+                // 主模型单菜单（Codex 等）；None 语义同 Main（不消费映射，
+                // 菜单选一个写入主模型键——未来无模型目标可在此短路跳过）
+                let mut labels = models.to_vec();
+                labels.push("Leave untouched (keep existing)".to_string());
+                let idx = prompt::select_from(&labels, "Which model should the tool use?")?;
+                if idx < models.len() {
+                    Ok((ModelMapping::default(), Some(models[idx].clone()), None))
+                } else {
+                    Ok((
+                        ModelMapping::default(),
+                        None,
+                        Some("model left untouched"),
+                    ))
+                }
+            }
+        },
+    }
+}
+
+/// 解析 `--model-map` 规格：`opus=X,sonnet=Y,haiku=Z`——逗号分隔的
+/// 别名=模型对（别名大小写不敏感），给定的才写、未提及的别名不动。
+///
+/// # Errors
+/// 空规格 / 未知别名 / 缺 `=` / 模型为空。
+pub fn parse_model_map(spec: &str) -> Result<ModelMapping> {
+    let mut map = ModelMapping::default();
+    for pair in spec.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (alias, model) = pair.split_once('=').ok_or_else(|| {
+            Error::Usage(format!(
+                "invalid --model-map item '{pair}'; expected alias=model (opus | sonnet | haiku)"
+            ))
+        })?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(Error::Usage(format!(
+                "--model-map item '{pair}' has an empty model"
+            )));
+        }
+        match alias.trim().to_ascii_lowercase().as_str() {
+            "opus" => map.opus = Some(model.to_string()),
+            "sonnet" => map.sonnet = Some(model.to_string()),
+            "haiku" => map.haiku = Some(model.to_string()),
+            other => {
+                return Err(Error::Usage(format!(
+                    "unknown alias '{other}' in --model-map; valid: opus, sonnet, haiku"
+                )))
+            }
+        }
+    }
+    if map.is_empty() {
+        return Err(Error::Usage(
+            "--model-map has no items; expected alias=model pairs (opus | sonnet | haiku)".into(),
+        ));
+    }
+    Ok(map)
+}
+
+/// 目标解析（D63 交互首位）：`--into` 显式 id 查找；缺省时交互出菜单
+/// （单目标也问——"正在配什么"始终可见，未来多目标流程零变更；选项 =
+/// display_name，首项默认），非 TTY 维持脚本语义：单目标静默默认，
+/// 多目标报错要求 `--into`。
+/// 目标解析与选择（D68 检测前置）：先全量 detect——
+/// - `--into` 显式：查找并返回（未检测交给 [`gate_detect`] 软门控，
+///   "先配置后安装"的显式意图不被没收）；
+/// - 缺省交互：菜单列出**全部目标**，未检测的标注 "not detected" 且
+///   **不可选**——选中即提示并回到菜单；
+/// - 非 TTY：单目标静默默认（未检测仍交 gate_detect 把关）；多目标
+///   报错要求 `--into`。
+fn pick_target(into: Option<&str>, interactive: bool, home: &Path) -> Result<Box<dyn Target>> {
+    let mut all = supply::all_targets();
+    if let Some(id) = into {
+        let supported = all.iter().map(|t| t.id()).collect::<Vec<_>>().join(", ");
+        return supply::find_target(id)
+            .ok_or_else(|| Error::Usage(format!("unknown target '{id}'; supported: {supported}")));
+    }
+    match all.len() {
+        0 => Err(Error::Usage(
+            "no ecosystem targets are supported yet".into(),
+        )),
+        1 if !interactive => Ok(all.remove(0)),
+        _ => {
+            let labels: Vec<String> = all
+                .iter()
+                .map(|t| {
+                    if t.detect(home) {
+                        t.display_name().to_string()
+                    } else {
+                        format!("{} — not detected", t.display_name())
+                    }
+                })
+                .collect();
+            loop {
+                let idx = prompt::select_from(
+                    &labels,
+                    "Which tool should this credential be applied to?",
+                )?;
+                let detected = all[idx].detect(home);
+                if detected {
+                    return Ok(all.remove(idx));
+                }
+                eprintln!(
+                    "{} is not detected on this machine — install it first.",
+                    all[idx].display_name()
+                );
+            }
+        }
+    }
+}
+
+/// 协议族门控（D59）：依据用户手填标签。`Ok(true)` = 直行或确认后行，
+/// `Ok(false)` = 用户放弃，`Err` = 硬拒（`Fit::No`，`--yes` 也不越过）。
+fn gate_protocol(tgt: &dyn Target, protocol: &Protocol, yes: bool) -> Result<bool> {
+    match tgt.fit(protocol) {
+        Fit::Yes => Ok(true),
+        Fit::No { message, .. } => Err(Error::Usage(message)),
+        Fit::Confirm { message, .. } => {
+            prompt::warn(&format!("Protocol note: {message}"));
+            if yes {
+                return Ok(true);
+            }
+            if !prompt::is_interactive() {
+                return Err(Error::Usage(
+                    "rerun with --yes to apply this protocol anyway".into(),
+                ));
+            }
+            Ok(confirm("Apply anyway?", false))
+        }
+    }
+}
+
+/// 工具检测门控：未检出工具（配置目录不存在）时须确认或 `--yes` 才继续。
+fn gate_detect(tgt: &dyn Target, home: &Path, yes: bool) -> Result<bool> {
+    if tgt.detect(home) {
+        return Ok(true);
+    }
+    prompt::warn(&format!(
+        "{} is not detected on this machine",
+        tgt.display_name()
+    ));
+    if yes {
+        return Ok(true);
+    }
+    if !prompt::is_interactive() {
+        return Err(Error::Usage(
+            "rerun with --yes to create the config directory anyway".into(),
+        ));
+    }
+    Ok(confirm("Create its config and continue?", false))
+}
+
+/// 打印供给计划：文件、被替换旧值（掩码）、备份、写入与移除。
+/// 旧值读不出（配置损坏）直接报错——写盘时 core 同样会拒，早失败早提示。
+fn print_plan(scope: UseScope, tgt: &dyn Target, path: &Path, plan: &ApplyOutcome) -> Result<()> {
+    println!("{} · {}", tgt.display_name(), scope_label(scope));
+    println!("  File   : {}", plan.path.display());
+    if let Some(cur) = tgt.current(path)? {
+        if let Some(u) = &cur.base_url {
+            println!("  Old    : base url = {u}");
+        }
+        if let Some(t) = &cur.auth_token {
+            println!("  Old    : auth token = {}", mask_secret(t));
+        }
+        if let Some(k) = &cur.api_key {
+            println!("  Old    : api key = {}", mask_secret(k));
+        }
+        for (label, m) in [
+            ("opus alias", &cur.opus_model),
+            ("sonnet alias", &cur.sonnet_model),
+            ("haiku alias", &cur.haiku_model),
+        ] {
+            if let Some(m) = m {
+                println!("  Old    : {label} = {m}");
+            }
+        }
+    }
+    match (&plan.backup, plan.backup_new) {
+        (Some(b), true) => println!("  Backup : {}", b.display()),
+        (Some(b), false) => println!("  Backup : {} (kept from the first apply)", b.display()),
+        (None, _) => println!("  Backup : none (new file)"),
+    }
+    for w in &plan.writes {
+        println!("  Set    : {} = {}", w.path, w.display());
+    }
+    for r in &plan.removes {
+        println!("  Remove : {r}");
+    }
+    Ok(())
+}
+
+/// 最终写盘前的单次确认（调用方保证已过交互 / `--yes` 门控）。
+fn confirm_apply() -> bool {
+    confirm("Apply this plan?", true)
+}
+
+/// 供给范围的人读标签（括号内是伴随状态标注，AGENTS.md 括号规则允许）。
+fn scope_label(scope: UseScope) -> &'static str {
+    match scope {
+        UseScope::User => "user config",
+        UseScope::ProjectLocal => "project config (personal, gitignored)",
+        UseScope::ProjectShared => "project config (shared, usually committed)",
     }
 }
 
@@ -1625,7 +2148,9 @@ mod tests {
     //! 版本比较回归（D16）：提示新版本的前提是比较不误报。
     //! 自更新机制回归（D40）：解压与 rename 替换是全链路里唯一能在
     //! 无网络环境下验证的核心——真链路待真实发版自然验证。
-    use super::{extract_archive, is_newer, parse_model_list, release_asset, replace_self};
+    use super::{
+        extract_archive, is_newer, parse_model_list, parse_model_map, release_asset, replace_self,
+    };
 
     /// 平台附件 URL 形态（D40）：仓库前缀、tag、目标串与扩展名全部
     /// 就位——自更新下载按它构造，错一个字符就是 404。
@@ -1725,5 +2250,25 @@ mod tests {
         assert_eq!(parse_model_list("a，b"), vec!["a", "b"]);
         assert_eq!(parse_model_list(" , ,"), [] as [std::string::String; 0]);
         assert_eq!(parse_model_list(""), [] as [std::string::String; 0]);
+    }
+
+    /// `--model-map` 规格解析（D64）：子集合法、未提及别名保持 None。
+    #[test]
+    fn model_map_spec_parses_subsets_and_validates() {
+        let m = parse_model_map("opus=glm-5.2, haiku=glm-5-turbo").expect("parse ok");
+        assert_eq!(m.opus.as_deref(), Some("glm-5.2"));
+        assert_eq!(m.sonnet, None, "未提及的别名保持 None");
+        assert_eq!(m.haiku.as_deref(), Some("glm-5-turbo"));
+
+        // 别名大小写不敏感、空片段跳过
+        let m = parse_model_map(" SONNET=claude-sonnet-4-5 ,,").expect("parse ok");
+        assert_eq!(m.sonnet.as_deref(), Some("claude-sonnet-4-5"));
+        assert!(m.opus.is_none() && m.haiku.is_none());
+
+        // 错误路径：空规格 / 空模型 / 缺 = / 未知别名
+        assert!(parse_model_map("").is_err());
+        assert!(parse_model_map("opus=").is_err());
+        assert!(parse_model_map("opus").is_err());
+        assert!(parse_model_map("mini=glm-5.2").is_err());
     }
 }

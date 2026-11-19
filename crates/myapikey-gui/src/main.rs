@@ -97,6 +97,16 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(std::sync::Arc::clone(&shared))
         .setup(move |app| {
+            // ---- 窗口运行时图标（D70）：**纯白圆角底**——标题栏/任务栏
+            // 与开始菜单同一观感（Windows 图标语义一体）；透明底只留给
+            // 托盘（下方 TrayIconBuilder，菜单栏深浅色都协调）
+            if let Some(win) = app.get_webview_window("main") {
+                let solid =
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png"))
+                        .expect("窗口图标解码失败");
+                let _ = win.set_icon(solid);
+            }
+
             // ---- 启动主动续期(2026-11-03):令牌过期/临近过期时静默
             // 换新,用户启动应用即恢复可用,不必等第一次同步撞 401;
             // 凭据库独立于 vault 会话,无需解锁。
@@ -182,7 +192,12 @@ fn main() {
             // 菜单文案随语言设置（前端启动时上报，见 set_ui_lang）
             let menu = build_tray_menu(app.handle())?;
             tauri::tray::TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().expect("应用图标缺失").clone())
+                // D70：托盘用**透明底品牌徽标**（菜单栏深浅色都协调）——
+                // 应用图标是纯白圆角底，放菜单栏就是一块白斑
+                .icon(
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                        .expect("托盘图标解码失败"),
+                )
                 .tooltip("Makara")
                 .menu(&menu)
                 // 左键单击托盘图标 = 显示主窗口（右键出菜单）
@@ -263,6 +278,11 @@ fn main() {
             commands::app_version,
             commands::check_update,
             commands::apply_update,
+            commands::supply_targets,
+            commands::supply_target_options,
+            commands::supply_fit,
+            commands::supply_preview,
+            commands::supply_apply,
         ])
         .build(tauri::generate_context!())
         .expect("tauri 应用启动失败")

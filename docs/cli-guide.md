@@ -129,17 +129,24 @@ Master passphrase: ********
 makara key 1
 ```
 
-**把凭证配置到 AI 工具**（当前支持 Claude Code；写入前展示计划并确认，原配置自动备份）：
+**把凭证配置到 AI 工具**（当前支持 Claude Code 与 Codex CLI；写入前展示计划并确认，原配置自动备份）：
 
 ```bash
-makara use 1                       # 用户级：~/.claude/settings.json，全局生效
+makara use                         # 无参数：终端里交互引导——选工具 → 选记录 → 选生效范围
+                                   #   → 选 token 形态 → 选模型映射 → 确认
+makara use 1                       # Claude Code：用户级 ~/.claude/settings.json，全局生效
 cd /path/to/myproject
 makara use 1 --project             # 项目级：.claude/settings.local.json（个人，gitignore）
 makara use 1 --project --shared    # 项目共享变体：会被提交进 git，key 随仓库泄露，慎用
+makara use 1 --into codex          # Codex CLI：~/.codex/config.toml（仅用户级，无项目级）
 makara use 1 --dry-run             # 只看计划，不写盘
 ```
 
+显式参数永远优先，交互只补缺省项；脚本（非交互 / `--yes`）全程纯参数语义，不出任何菜单。**未安装的工具**在工具菜单中标注「not detected」且不可选（先装工具再配置）；确有需要可用 `--into <目标> --yes` 强行写入（如装前先配好）。
+
 - 默认写 `ANTHROPIC_AUTH_TOKEN`（Bearer 形态，三方网关/中转）；`--api-key` 切换为 `ANTHROPIC_API_KEY`（x-api-key 形态）；
+- **模型映射**（D65/D66 按 target 分派）：**Claude Code**（D65 纯逐别名）——`opus` / `sonnet` / `haiku` 三个别名各自映射到记录的模型（写入 `ANTHROPIC_DEFAULT_*_MODEL`，后台任务走 haiku 档），终端缺省交互逐别名三菜单（每项可选 Leave untouched），脚本用 `--model-map opus=X,sonnet=Y,haiku=Z`（子集合法）或 `--no-model` 跳过；不碰 `model` 主模型键——会话内 `/model` 切换不受影响。**Codex CLI**（D66）——单主模型键，交互单菜单选择（Leave untouched = 不动 `model` 键），脚本用 `--model <名>` 指定（对 Claude 用 `--model` 会报错并引导 `--model-map`）。记录没配模型 → 跳过映射并在计划里注明（出路：`makara edit` 补模型）；
+- **Codex 专属**（D66/D69，适配基准 **Codex CLI 0.170.0**）：key 写入 `model_providers.makara.experimental_bearer_token`（0600 保护；Codex 自定义 provider 的 key 三条路里唯一不依赖 shell 环境变量的落盘路径），`wire_api` 恒写 `responses`——**Codex 0.170.0 起已移除 chat 支持**，`openai-chat` 标签的记录会被直接拒绝（端点若实际服务 Responses API，把记录协议改回 `openai` 即可）；你手写的其他配置与其他 provider 表原样保留，顶层 `model_provider` 被改指 makara 时计划里会明确提示；
 - 只接受 Anthropic 族的记录（OpenAI 族记录直接拒绝），写完重启 Claude Code 会话生效；
 - 首次写入自动把原文件备份为 `settings.json.bak`（只建一次，永久保留接入 Makara 前的原貌）。
 
@@ -267,6 +274,10 @@ Options:
 **提示 not initialized？** 这台设备还没初始化，先跑 `makara init`（按交互提示选择是否绑定 GitHub 同步）。
 
 **之前绑定过，现在显示未绑定（单机模式）？** 本机的 GitHub 访问凭据丢失或被回收——Makara 只呈现「已绑定 / 未绑定」两态，此时按未绑定处理。数据无损：远端仓库与本地记录都还在，重新绑定即可恢复——GUI 点「绑定仓库」，CLI 跑 `makara remote set <owner/repo>`，浏览器授权一次即恢复，同步会自动对账。
+
+**macOS 弹出钥匙串授权框（要求登录密码）？** 正常现象：每个新构建的二进制首次读取「记住的密码」时，macOS 要求确认。输入登录密码并点**始终允许**——同一构建内不会再弹（CLI 在弹窗前会在终端预告）。发布新版本后可能再弹一次，同样处理。
+
+**SSH 连到 mac 上用 `makara` 命令卡住 / 提示 SSH session？** macOS 的钥匙串授权框无法通过 SSH 显示，Makara 会**主动跳过**记住的密码（不再挂起）并提示——直接手动输入解锁密码，或用环境变量 `MYAPIKEY_PASSPHRASE` 提供密码（CI/脚本同理）。
 
 ## 安装
 

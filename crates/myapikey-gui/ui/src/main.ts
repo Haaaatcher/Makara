@@ -5,7 +5,7 @@
  * 界面层不包含任何加密/同步逻辑——全部经 bridge 调后端 command。
  */
 
-import { invoke, onAuthInvalid, onLocked, ProgressChannel, saveDialog } from "./bridge";
+import { invoke, onAuthInvalid, onLocked, openFolderDialog, ProgressChannel, saveDialog } from "./bridge";
 
 // zxcvbn 懒加载实例（模块级缓存，首次评强度时才拉取）：语料 + 匹配器
 // 配置一次成型。动态 import 把 ~300KB 语料拆出主 chunk——改密码抽屉
@@ -159,6 +159,7 @@ const ICONS: Record<string, string> = {
   globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   back: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
   chevron: '<polyline points="6 9 12 15 18 9"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
 };
 
 /** 与 core::store::is_valid_http_url 同规则的 TS 版（前端即时反馈）。
@@ -242,6 +243,14 @@ function isValidRemoteUrl(t: string): boolean {
   if (tail.includes(":")) return false; // SSH 形态（git@…）与后端同拒绝
   const parts = tail.split("/");
   return parts.length === 2 && parts.every((p) => p !== "");
+}
+
+/** 品牌徽标（D70）：与应用图标同源的蓝 key 网络图形，透明底。 */
+function brandMark(): HTMLImageElement {
+  const img = el("img", "brand-mark");
+  img.src = "/emblem.svg";
+  img.alt = "Makara";
+  return img;
 }
 
 /** 按名字生成一个内联 SVG 图标元素。 */
@@ -457,6 +466,101 @@ const STRINGS: Record<string, [string, string]> = {
   checkKey: ["Check key", "校验 key"],
   editRecord: ["Edit record", "编辑记录"],
   deleteRecord: ["Delete record", "删除记录"],
+  // 供给（D65）：Apply 对话框。选项集合与文案来自 target（英文原样渲染，
+  // D62 生态知识单源）；此处只放对话框骨架的双语文案
+  applyToTool: ["Apply to tool…", "应用到工具…"],
+  applyTitle: ["Apply to Harness", "应用到 Harness"],
+  applyTool: ["Tool", "工具"],
+  applyScope: ["Scope", "生效范围"],
+  applyStyle: ["Credential style", "凭证形态"],
+  applyMapping: ["Model mapping", "模型映射"],
+  applyModelMain: ["Model", "模型"],
+  applyLeaveUntouched: ["Keep unchanged", "保持现状"],
+  applyScopeUser: ["User config (recommended)", "用户级（推荐）"],
+  applyScopeUserDesc: ["All projects on this machine", "本机所有项目生效"],
+  applyScopeLocal: ["Project config (personal)", "项目级（个人）"],
+  applyScopeLocalDesc: ["This project only, never committed to git", "仅本项目生效，不提交 git"],
+  applyScopeShared: ["Project config (shared)", "项目级（共享）"],
+  applyScopeSharedDesc: [
+    "This project only, committed to git, the key enters the repo history",
+    "仅本项目生效，key 会随 git 提交进仓库历史",
+  ],
+  applyStyleAuth: ["AUTH_TOKEN (recommended)", "AUTH_TOKEN（推荐）"],
+  applyStyleAuthDesc: [
+    "Bearer header, used by most gateways / relays",
+    "Bearer 头，绝大多数网关/中转使用",
+  ],
+  applyStyleApi: ["API_KEY", "API_KEY"],
+  applyStyleApiDesc: [
+    "x-api-key header, official endpoint or strict mirrors",
+    "x-api-key 头，官方端点或严格镜像",
+  ],
+  applyAliasOpus: ["opus", "opus 别名"],
+  applyAliasSonnet: ["sonnet", "sonnet 别名"],
+  applyAliasHaiku: ["haiku", "haiku 别名"],
+  applyKeepMainDesc: ["Codex falls back to its built-in default", "未设置时 Codex 用内置默认模型"],
+  applyNoModels: [
+    "No models on this record — add models via edit, or skip mapping.",
+    "这条记录还没有模型。先在编辑里补模型，或跳过映射。",
+  ],
+  applyNotDetectedShort: ["not detected", "未检测到"],
+  applyFitAnyway: ["Apply anyway", "仍要应用"],
+  warnCodexChatgptLogin: [
+    "ChatGPT login detected — it takes precedence over the gateway configured by Makara. Run `codex logout` to use the gateway.",
+    "检测到 ChatGPT 账号登录，会优先于 Makara 配置的网关。要改用网关，先执行 codex logout。",
+  ],
+  fitClaudeOpenAiFamily: [
+    "Claude Code speaks the Anthropic API; this record is OpenAI-family.",
+    "Claude Code 使用 Anthropic API；这条记录是 OpenAI 系。",
+  ],
+  fitClaudeLegacy: [
+    "Legacy Anthropic protocol — confirm the endpoint works with Claude Code.",
+    "旧版 Anthropic 协议。请确认端点在 Claude Code 下可用。",
+  ],
+  fitClaudeCustom: [
+    "Custom protocol label — confirm the endpoint serves the Anthropic API.",
+    "自定义协议标签。请确认端点提供 Anthropic API。",
+  ],
+  fitCodexChatRemoved: [
+    'Codex removed the chat API; this record is labeled OpenAI Chat — relabel it as "openai" if the endpoint serves Responses.',
+    "Codex 只支持 Responses API（chat 已移除）；这条记录是 OpenAI Chat 标签。要改用网关，请把协议改回 openai。",
+  ],
+  fitCodexAnthropicFamily: [
+    "Codex speaks the OpenAI API; this record is Anthropic-family.",
+    "Codex 使用 OpenAI API；这条记录是 Anthropic 系。",
+  ],
+  fitCodexCustom: [
+    "Custom protocol label — the provider will be written for the Responses API.",
+    "自定义协议标签。将按 Responses API 写入。",
+  ],
+  applyNotDetected: [
+    "Not detected on this machine — applying still works; it takes effect once the tool is installed.",
+    "本机未检测到该工具。仍可写入，安装后即生效。",
+  ],
+  // 保存推送反馈（D67 修复：推送结果如实呈现）
+  savedPushed: ['{0} saved & pushed', "已保存并推送「{0}」"],
+  savedPushError: [
+    '{0} saved locally — push failed: {1}. Click Sync to retry.',
+    '已保存本地「{0}」；推送失败：{1}——点「立即同步」重试。',
+  ],
+  savedLocalNoPush: [
+    '{0} saved locally (auto-push is off — click Sync to push).',
+    '已保存本地「{0}」（自动推送已关闭——点「立即同步」推送）。',
+  ],
+  savedLocalStandalone: [
+    '{0} saved locally (standalone — bind a remote to sync).',
+    '已保存本地「{0}」（单机模式——绑定远端后同步）。',
+  ],
+  applyProjectFolder: ["Project folder", "项目文件夹"],
+  applyChooseFolder: ["Choose folder…", "选择文件夹…"],
+  applyPickFolder: ["Pick a folder for the project config", "为项目级配置选择文件夹"],
+  applySharedWarn: [
+    "Shared config is committed to git — the key enters the repo history.",
+    "共享配置会随 git 提交，key 会进仓库历史。",
+  ],
+  applyBtn: ["Apply", "应用"],
+  applying: ["Applying…", "正在应用…"],
+  applied: ["Applied to {0}", "已应用到 {0}"],
   copying: ["Copying…", "正在复制…"],
   checking: ["Checking…", "正在校验…"],
   checkDone: ["Done: {0}", "检测完成：{0}"],
@@ -1230,7 +1334,12 @@ interface DdHandle {
  * 选项变更走 onChange；整页重建的回填直接用新值重建即可。
  */
 function makeSelect(
-  opts: Array<{ value: string; label: string }>,
+  opts: Array<{
+    value: string;
+    label: string;
+    desc?: string;
+    disabled?: boolean;
+  }>,
   initial: string,
   onChange?: (v: string) => void,
 ): DdHandle {
@@ -1265,13 +1374,26 @@ function makeSelect(
   const renderItems = (): void => {
     list.replaceChildren();
     for (const o of opts) {
-      const item = el("button", o.value === val ? "dd-item active" : "dd-item");
+      // disabled 项（D68）：muted 展示、不可选中——"显示但不可选"
+      const item = el(
+        "button",
+        o.disabled ? "dd-item dd-item-disabled" : o.value === val ? "dd-item active" : "dd-item",
+      );
       item.type = "button";
-      item.append(el("span", "dd-check", "✓"), el("span", "", o.label));
+      const text = el("span", "dd-text");
+      text.append(el("span", "dd-item-title", o.label));
+      // 描述行（D70）：标题下的灰色小字，替代"——"破折号拼接
+      if (o.desc) text.append(el("span", "dd-item-desc", o.desc));
+      item.append(el("span", "dd-check", o.disabled ? "" : "✓"), text);
       // 面板内 Enter（选中）/Escape（收起）都不冒泡到抽屉的 Enter=保存
       item.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === "Escape") ev.stopPropagation();
       });
+      if (o.disabled) {
+        item.disabled = true;
+        list.append(item);
+        continue;
+      }
       item.addEventListener("click", () => {
         val = o.value;
         labelSpan.textContent = o.label;
@@ -1372,7 +1494,7 @@ function renderInit(): void {
   const card = el("div", "card init-card");
 
   const brand = el("h1", "brand-row");
-  brand.append(icon("key"), el("span", "brand", "Makara"), langToggle(renderInit));
+  brand.append(brandMark(), el("span", "brand", "Makara"), langToggle(renderInit));
   card.append(brand);
   card.append(el("p", "muted", t("initSubtitle")));
 
@@ -1463,7 +1585,7 @@ function renderPassphrase(hasData: boolean): void {
   const card = el("div", "card init-card");
 
   const brand = el("h1", "brand-row");
-  brand.append(icon("key"), el("span", "brand", "Makara"), langToggle(() => renderPassphrase(hasData)));
+  brand.append(brandMark(), el("span", "brand", "Makara"), langToggle(() => renderPassphrase(hasData)));
   card.append(brand);
   card.append(el("p", "muted", hasData ? t("passJoinTitle") : t("passSetTitle")));
 
@@ -1801,7 +1923,7 @@ function renderUnlock(afterLock: boolean): void {
   const wrap = el("div", "center-wrap");
   const card = el("div", "card init-card");
   const brandH = el("h1", "brand-row");
-  brandH.append(icon("key"), el("span", "brand", "Makara"), langToggle(() => renderUnlock(afterLock)));
+  brandH.append(brandMark(), el("span", "brand", "Makara"), langToggle(() => renderUnlock(afterLock)));
   card.append(brandH);
   // 钥匙串授权引导（D57）：系统弹窗文案不可自定义，应用内预告补位——
   // 新构建首次打开时以「示意图 + 说明」面板呈现一次，让用户带着预期
@@ -1871,7 +1993,7 @@ async function renderMain(): Promise<void> {
   // 顶栏
   const top = el("div", "topbar");
   const brand = el("div", "topbar-brand");
-  brand.append(icon("key"), el("span", "brand", "Makara"));
+  brand.append(brandMark(), el("span", "brand", "Makara"));
   const chips = el("div", "chips");
   const syncBtn = el("button", "btn btn-small", t("syncNow"));
   syncBtn.prepend(icon("sync"));
@@ -2153,6 +2275,11 @@ async function renderMain(): Promise<void> {
         }
       }),
     );
+    const applyBtn = el("button", "btn btn-icon");
+    applyBtn.dataset.tip = t("applyToTool");
+    applyBtn.setAttribute("aria-label", t("applyToTool"));
+    applyBtn.append(icon("send"));
+    applyBtn.addEventListener("click", () => void openApplyDialog(r, refresh));
     const editBtn = el("button", "btn btn-icon");
     editBtn.dataset.tip = t("editRecord");
     editBtn.setAttribute("aria-label", t("editRecord"));
@@ -2185,7 +2312,7 @@ async function renderMain(): Promise<void> {
         });
       })();
     });
-    actions.append(checkBtn, editBtn, delBtn);
+    actions.append(checkBtn, applyBtn, editBtn, delBtn);
     foot.append(checkChip, updated, actions);
     card.append(head, urlRow, keyRow);
     if (modelsRow) card.append(modelsRow);
@@ -2420,6 +2547,350 @@ function openPassDrawer(remoteBound: boolean): void {
   });
   document.body.appendChild(overlay);
   oldPass.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Apply 对话框（D65）：把记录供给到 AI 工具的配置文件
+// ---------------------------------------------------------------------------
+
+/** 供给后端视图（与 Rust 侧 Supply* 结构一一对应）。 */
+interface SupplyTarget {
+  id: string;
+  name: string;
+  detected: boolean;
+}
+interface SupplyScopeOpt {
+  scope: string;
+  label: string;
+}
+interface SupplyStyleOpt {
+  api_key_style: boolean;
+  label: string;
+}
+interface SupplyOptions {
+  scopes: SupplyScopeOpt[];
+  styles: SupplyStyleOpt[] | null;
+  model_kind: "aliases" | "main" | null;
+  detected: boolean;
+  warnings: Array<{ key: string; message: string }>;
+}
+interface SupplyField {
+  label: string;
+  value: string;
+}
+interface SupplyPlan {
+  path: string;
+  backup: string | null;
+  backup_new: boolean;
+  old: SupplyField[];
+  set: SupplyField[];
+  removes: string[];
+  note: string | null;
+}
+
+/**
+ * Apply 对话框：选项集合与文案来自 target（D62 单源，原样渲染英文）；
+ * 计划预览 = CLI dry-run 同源，Apply 点击即确认（单次确认语义）。
+ * 模型映射为纯逐别名（D65）：三个下拉各映射一个别名，可保持原状；
+ * 记录无模型时该区显示提示且映射保持为空。
+ */
+async function openApplyDialog(
+  record: RecordView,
+  onDone: () => Promise<void>,
+  initialTargetId?: string,
+): Promise<void> {
+  if (document.querySelector(".overlay")) return;
+
+  let targets: SupplyTarget[];
+  try {
+    targets = await invoke<SupplyTarget[]>("supply_targets");
+  } catch (e) {
+    toast(syncUserError(String(e)), false);
+    return;
+  }
+  if (targets.length === 0) return;
+
+  // 请求状态（计划预览与 Apply 共用同一份；与后端 SupplyRequest 对齐）。
+  // target 决定 scope/形态/模型的选项集（D66），切换工具 = 以新 target
+  // 重建整个对话框（选项集合是 target 专属知识，不能跨工具复用）
+  const req: {
+    targetId: string;
+    scope: string;
+    apiKeyStyle: boolean;
+    mapping: { opus: string | null; sonnet: string | null; haiku: string | null };
+    model: string | null;
+    projectRoot: string | null;
+  } = {
+    targetId: initialTargetId ?? (targets.find((x) => x.detected)?.id ?? targets[0].id),
+    scope: "user",
+    apiKeyStyle: false,
+    mapping: { opus: null, sonnet: null, haiku: null },
+    model: null,
+    projectRoot: null,
+  };
+
+  const overlay = el("div", "overlay");
+  const drawer = el("div", "drawer");
+  drawer.append(el("h2", "", t("applyTitle")));
+
+  // 范围 / 形态：选项与默认值来自 target（D62，首项即默认）——先取数，
+  // 工具区与后续各区的渲染都依赖它
+  let options: SupplyOptions;
+  try {
+    options = await invoke<SupplyOptions>("supply_target_options", { targetId: req.targetId });
+  } catch (e) {
+    overlay.remove();
+    toast(syncUserError(String(e)), false);
+    return;
+  }
+
+  // 工具（D68 检测前置）：全部目标都显示，未检测的标注并禁用（不可选）；
+  // 默认选第一个已检测目标；切换 = 重建对话框拉取该 target 的选项集
+  drawer.append(el("div", "field-label", t("applyTool")));
+  const tool = makeSelect(
+    targets.map((x) => ({
+      value: x.id,
+      label: x.detected ? x.name : `${x.name} · ${t("applyNotDetectedShort")}`,
+      disabled: !x.detected,
+    })),
+    // 初始 = 重建时传入的工具（D66 切换工具重建），否则默认第一个已检测目标
+    req.targetId,
+    () => {
+      overlay.remove();
+      void openApplyDialog(record, onDone, tool.value);
+    },
+  );
+  req.targetId = tool.value;
+  drawer.append(tool.root);
+  // 未检测到工具（D67 补 GUI 缺口）：软提示——写入仍允许，装好即生效
+  if (!options.detected) {
+    drawer.append(el("p", "muted", t("applyNotDetected")));
+  }
+  // target 配置面警示（D70：如 Codex 的 ChatGPT 登录态压过网关认证）
+  for (const w of options.warnings) {
+    const box = el("p", "warn-box", `⚠ ${STRINGS[w.key] ? t(w.key) : w.message}`);
+    box.style.display = "block";
+    drawer.append(box);
+  }
+
+  // 协议族门控（D59/D69）：fit 三态——no 禁用 Apply；confirm 出警告 +
+  // 勾选确认；yes 直行。判定随工具切换由重建自然刷新
+  // 协议族门控（D59/D69）：fit 三态——no 禁用 Apply；confirm 出警告 +
+  // 勾选确认；yes 直行。判定随工具切换由重建自然刷新。
+  // 默认隐藏（空段落也占位——D70 布局整改），有内容才显示
+  const fitWrap = el("p", "warn-box");
+  fitWrap.style.display = "none";
+  const fitBox = el("label", "muted");
+  const fitCheck = el("input");
+  fitCheck.type = "checkbox";
+  const fitText = el("span", "", t("applyFitAnyway"));
+  fitBox.append(fitCheck, fitText);
+  fitBox.style.display = "none";
+  drawer.append(fitWrap);
+  drawer.append(fitBox);
+
+  req.scope = options.scopes[0]?.scope ?? "user";
+
+  // 范围菜单：目标只有一个范围（如 Codex 无项目级配置）时直接默认，不出菜单。
+  // 选项 = 标题 + 灰色小字描述（D70），文案按 Scope 枚举走双语字典，
+  // 未知枚举回退 core 提供的英文
+  const scopeText = (id: string): { label: string; desc: string } => {
+    const key = { user: "applyScopeUser", "project-local": "applyScopeLocal", "project-shared": "applyScopeShared" }[
+      id
+    ];
+    return { label: t(key ?? "applyScopeUser"), desc: t(`${key}Desc`) };
+  };
+  if (options.scopes.length > 1) {
+    drawer.append(el("div", "field-label", t("applyScope")));
+    const scope = makeSelect(
+      options.scopes.map((s) => {
+        const { label, desc } = scopeText(s.scope);
+        return { value: s.scope, label, desc, };
+      }),
+      req.scope,
+      () => {
+        req.scope = scope.value;
+        syncScopeUI();
+      },
+    );
+    drawer.append(scope.root);
+  }
+
+  // 项目级范围需要项目根目录：文件夹选择器（GUI 无 cwd，D65）
+  const folderRow = el("div", "field-row");
+  const folderBtn = el("button", "btn btn-small", t("applyChooseFolder"));
+  folderBtn.type = "button";
+  const folderLabel = el("span", "muted");
+  folderBtn.addEventListener("click", async () => {
+    const dir = await openFolderDialog({
+      title: t("applyPickFolder"),
+      fallback: "/tmp/mock-project",
+    });
+    if (!dir) return;
+    req.projectRoot = dir;
+    folderLabel.textContent = dir;
+  });
+  folderRow.append(folderBtn, folderLabel);
+  folderRow.style.display = "none";
+  drawer.append(folderRow);
+
+  // 形态（target 无形态之分时整区隐藏）；文案按形态枚举走双语字典
+  if (options.styles && options.styles.length > 0) {
+    req.apiKeyStyle = options.styles[0].api_key_style;
+    drawer.append(el("div", "field-label", t("applyStyle")));
+    const style = makeSelect(
+      options.styles.map((s) => ({
+        value: String(s.api_key_style),
+        label: s.api_key_style ? t("applyStyleApi") : t("applyStyleAuth"),
+        desc: s.api_key_style ? t("applyStyleApiDesc") : t("applyStyleAuthDesc"),
+      })),
+      String(req.apiKeyStyle),
+      () => {
+        req.apiKeyStyle = style.value === "true";
+      },
+    );
+    drawer.append(style.root);
+  }
+
+  // 模型区（D65/D66/D69 目标驱动）：aliases = 三别名下拉，逐个别名标注
+  // （标题 + 灰色小字描述，D70）；main = 单主模型下拉；无模型时只出提示
+  if (options.model_kind !== null) {
+    if (options.model_kind === "aliases") {
+      drawer.append(el("div", "field-label", t("applyMapping")));
+    } else {
+      drawer.append(el("div", "field-label", t("applyModelMain")));
+    }
+    if (record.models.length === 0) {
+      drawer.append(el("p", "muted", t("applyNoModels")));
+    } else if (options.model_kind === "aliases") {
+      const untouched = "__untouched__";
+      const aliasTitles: Record<string, string> = {
+        opus: t("applyAliasOpus"),
+        sonnet: t("applyAliasSonnet"),
+        haiku: t("applyAliasHaiku"),
+      };
+      for (const role of ["opus", "sonnet", "haiku"] as const) {
+        drawer.append(el("div", "field-label", aliasTitles[role]));
+        const labels = [
+          ...record.models.map((m) => ({ value: m, label: m })),
+          { value: untouched, label: t("applyLeaveUntouched") },
+        ];
+        const sel = makeSelect(labels, untouched, () => {
+          const v = sel.value;
+          req.mapping[role] = v === untouched ? null : v;
+        });
+        drawer.append(sel.root);
+      }
+    } else {
+      // main：单主模型（Codex 顶层 model 键）
+      const untouched = "__untouched__";
+      const labels = [
+        ...record.models.map((m) => ({ value: m, label: m })),
+        {
+          value: untouched,
+          label: t("applyLeaveUntouched"),
+          desc: t("applyKeepMainDesc"),
+        },
+      ];
+      const sel = makeSelect(labels, untouched, () => {
+        const v = sel.value;
+        req.model = v === untouched ? null : v;
+      });
+      drawer.append(sel.root);
+    }
+  }
+
+  // shared 后果可见（D59：写会进 git 的文件必须显式且有警示）
+  const sharedWarn = el("p", "warn-box", t("applySharedWarn"));
+  sharedWarn.style.display = "none";
+  drawer.append(sharedWarn);
+
+  function syncScopeUI(): void {
+    folderRow.style.display = req.scope === "user" ? "none" : "";
+    sharedWarn.style.display = req.scope === "project-shared" ? "block" : "none";
+  }
+
+  syncScopeUI();
+  // 协议适配判定（D69）：no → Apply 禁用并显示原因；confirm → 勾选放行
+  let fitOk = false;
+  async function loadFit(): Promise<void> {
+    try {
+      const f = await invoke<{
+        verdict: string;
+        reason_key: string | null;
+        reason: string | null;
+      }>("supply_fit", {
+        recordId: record.id,
+        targetId: req.targetId,
+      });
+      const reasonText =
+        (f.reason_key && STRINGS[f.reason_key] ? t(f.reason_key) : f.reason) ??
+        "protocol mismatch";
+      if (f.verdict === "no") {
+        fitWrap.textContent = `⚠ ${reasonText}`;
+        fitWrap.style.display = "block";
+        fitBox.style.display = "none";
+        fitOk = false;
+      } else if (f.verdict === "confirm") {
+        fitWrap.textContent = `⚠ ${reasonText}`;
+        fitWrap.style.display = "block";
+        fitCheck.checked = false;
+        fitBox.style.display = "";
+        fitOk = false;
+      } else {
+        fitWrap.textContent = "";
+        fitWrap.style.display = "none";
+        fitBox.style.display = "none";
+        fitOk = true;
+      }
+    } catch (e) {
+      fitWrap.textContent = String(e);
+      fitWrap.style.display = "";
+      fitOk = false;
+    }
+    syncApplyGate();
+  }
+  fitCheck.addEventListener("change", () => {
+    fitOk = fitCheck.checked;
+    syncApplyGate();
+  });
+  void loadFit();
+
+  const actions = el("div", "drawer-actions");
+  const cancel = el("button", "btn", t("cancel"));
+  const apply = el("button", "btn btn-primary", t("applyBtn"));
+  // 应用门控（D68 + D69）：目标未检测或协议判定未通过时禁用
+  function syncApplyGate(): void {
+    const detected = targets.find((x) => x.id === req.targetId)?.detected ?? false;
+    apply.disabled = !detected || !fitOk;
+  }
+  cancel.addEventListener("click", () => overlay.remove());
+  apply.addEventListener("click", () =>
+    void withBusy(apply, t("applying"), async () => {
+      try {
+        const plan = await invoke<SupplyPlan>("supply_apply", {
+          request: {
+            record_id: record.id,
+            target_id: req.targetId,
+            scope: req.scope,
+            api_key_style: req.apiKeyStyle,
+            mapping: req.mapping,
+            model: req.model,
+            project_root: req.projectRoot,
+          },
+        });
+        toast(t("applied", plan.path));
+        overlay.remove();
+        await onDone();
+      } catch (e) {
+        toast(syncUserError(String(e)), false);
+      }
+    }),
+  );
+  actions.append(cancel, apply);
+  drawer.append(actions);
+  overlay.append(drawer);
+  document.body.append(overlay);
 }
 
 function openDrawer(existing: RecordView | null, onSaved: () => Promise<void>): void {
@@ -2749,10 +3220,24 @@ function openDrawer(existing: RecordView | null, onSaved: () => Promise<void>): 
       notes: notes.value || null,
     };
     try {
-      await invoke("save_record", { input, editingId: existing?.id ?? null });
+      // D67：保存结果含推送结果——如实反馈（此前 SyncOutcome 被后端丢弃、
+      // 前端只提示"已添加"，推送失败/未推送用户无从感知）
+      const res = await invoke<{
+        pushed: boolean;
+        push_error: string | null;
+        standalone: boolean;
+      }>("save_record", { input, editingId: existing?.id ?? null });
       // 已落盘，草稿使命完成
       if (drawerDraft?.editingId === (existing?.id ?? null)) clearDrawerDraft();
-      toast(existing ? t("updated", input.name) : t("added", input.name));
+      if (res.push_error) {
+        toast(t("savedPushError", input.name, res.push_error), false);
+      } else if (res.pushed) {
+        toast(t("savedPushed", input.name));
+      } else if (res.standalone) {
+        toast(t("savedLocalStandalone", input.name), false);
+      } else {
+        toast(t("savedLocalNoPush", input.name), false);
+      }
       overlay.remove();
       await onSaved();
     } catch (e) {
@@ -2814,6 +3299,16 @@ function openDrawer(existing: RecordView | null, onSaved: () => Promise<void>): 
       save.click();
     }
   });
+  // 供给入口（D65）：编辑既有记录时可直达 Apply 对话框
+  if (existing) {
+    const applyBtn = el("button", "btn", t("applyToTool"));
+    applyBtn.type = "button";
+    applyBtn.addEventListener("click", () => {
+      closeDrawer();
+      void openApplyDialog(existing, onSaved);
+    });
+    actions.append(applyBtn);
+  }
   actions.append(cancel, save);
 
   // 每字段一行 muted 小标签（2026-10-31 反馈：仅 placeholder 在填值后

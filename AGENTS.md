@@ -81,6 +81,7 @@ cargo fmt                      # 格式化（提交前运行）
    - 在 `crates/myapikey-gui` 下执行 `node ui/node_modules/@tauri-apps/cli/tauri.js build`（crate 根有 `tauri.conf.json`，npm scripts 在 ui/ 下）
    - **交付我验证前，再杀一次旧进程**（同上命令）——应用单实例 + 托盘常驻：双击 exe / 点图标只是唤起旧进程窗口（加载的是旧前端），新版改动会「看起来没生效」；杀干净后我打开的才是新构建
    - 产物以链接交付给我：`target/release/myapikey-gui.exe`（免安装）与 `target/release/bundle/nsis/*-setup.exe`（安装包）；提醒我**托盘退出后重开**——点 × 只是隐藏到托盘，直接双击 exe 会由单实例唤起旧进程，跑的还是旧代码
+   - **CLI 改动的靶机同步安装**：CLI 或 core 有改动时，靶机的 `makara.exe` 同样要重装（`ssh makara-win "cd C:\Users\luohang\Projects\MyApiKey; cargo install --path crates\myapikey-cli --force"`）——与 GUI 重装同理，否则靶机 CLI 停在旧版，新行为（如登录态警示）无法回归（2026-11-19 实测教训：靶机 CLI 曾停在 v1.1.0 老项目路径的安装，D60–D70 全部改动缺失）
    - **macOS（M5 起）**：
      - 在 `crates/myapikey-gui` 下执行 `ui/node_modules/.bin/tauri build`；本地无 `TAURI_SIGNING_PRIVATE_KEY` 时在 updater 签名步报错退出（dmg / .app / 机制件已产出，仅缺 .sig）——快速验证用 `--bundles dmg` 跳过 updater 链；正式签名构建见发布流程
      - **签名密钥已就位本机 `~/.tauri/`**（2026-11-12 scp 自 Windows 靶机，三件套：`.pem` 私钥 + `.pub` + README）：构建前注入 `TAURI_SIGNING_PRIVATE_KEY=$HOME/.tauri/myapikey-updater.pem` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（口令在 README 的 `口令:` 行，提取后进环境变量、勿回显），本地即可出完整签名构建（2026-11-12 端到端验证：.sig 经 minisign-verify 权威验证通过）
@@ -103,6 +104,7 @@ cargo fmt                      # 格式化（提交前运行）
    （已 gitignore）。刷新端点实测必须携带 secret（文档的 device flow
    豁免与行为不符），未注入 = 用户自动续期失败
 1. **版本号**：workspace `Cargo.toml` 与 `crates/myapikey-gui/tauri.conf.json` 的 `version` 同步 bump
+1.5. **生态兼容核对（D69 发版红线）**：以各已接入生态（Claude Code / Codex CLI 等）**最新版本**为准核对供给适配行为（键名、协议支持、配置面），核对结果记入 design.md「§10.1 生态适配登记」表（版本 + 日期），并在 Release notes 中说明支持的生态版本；上游有破坏性变更（如 Codex 0.170.0 移除 `wire_api = "chat"`）必须先修适配再发版
 2. **签名构建（GUI）**：注入 `TAURI_SIGNING_PRIVATE_KEY`（私钥路径）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（取值见 `%USERPROFILE%\.tauri\myapikey-updater-README.txt`）再构建，产出安装包 + `.sig` 签名
 3. **更新清单**：`python scripts/make-latest-json.py <版本> [--breaking]` 生成 `latest.json`；破坏性版本**必须** `--breaking`——应用内守卫靠 notes 首行 `[breaking]` 标记与主版本提升双判定；Release notes **必须提及用户可见行为变化**（如 D50 的 stdout/stderr 分流——既有用户脚本的重定向假设会变）
 4. **CI 前置（一次性）**：仓库 Settings → Secrets 配置 `TAURI_SIGNING_PRIVATE_KEY`（私钥文件内容）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
