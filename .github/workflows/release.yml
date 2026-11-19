@@ -249,6 +249,7 @@ jobs:
           # windows-x86_64（nsis 安装包）与 darwin-aarch64（.app.tar.gz 机制件，
           # 人装的 dmg 不进更新清单）
           platforms = {}
+          repo = os.environ.get('GITHUB_REPOSITORY', 'Haaaatcher/Makara')
           win_sigs = glob.glob(f'dist/**/Makara_{version}_*.sig', recursive=True)
           if not win_sigs:
               sys.exit('发布中止：未找到 Windows 安装包签名件（期望 dist/**/Makara_<版本>_x64-setup.exe.sig）——检查 build-windows-gui job 是否成功且签名 secret 已注入')
@@ -256,7 +257,9 @@ jobs:
           win_exe = win_sig[:-len('.sig')]
           platforms['windows-x86_64'] = {
               'signature': open(win_sig).read().strip(),
-              'url': f'https://github.com/' + os.environ.get('GITHUB_REPOSITORY', 'Haaaatcher/Makara') + '/releases/download/{tag}/{os.path.basename(win_exe)}',
+              # 整行必须是 f-string：拼接会把 {tag}/{os.path.basename(...)}
+              # 留成字面模板（v1.3.0 实炸——updater 下载 404，手动替换才恢复）
+              'url': f'https://github.com/{repo}/releases/download/{tag}/{os.path.basename(win_exe)}',
           }
           mac_artifacts = glob.glob('dist/**/Makara*.app.tar.gz', recursive=True)
           if not mac_artifacts:
@@ -264,7 +267,7 @@ jobs:
           mac_artifact = mac_artifacts[0]
           platforms['darwin-aarch64'] = {
               'signature': open(mac_artifact + '.sig').read().strip(),
-              'url': f'https://github.com/' + os.environ.get('GITHUB_REPOSITORY', 'Haaaatcher/Makara') + '/releases/download/{tag}/{os.path.basename(mac_artifact)}',
+              'url': f'https://github.com/{repo}/releases/download/{tag}/{os.path.basename(mac_artifact)}',
           }
           doc = {
               'version': version,
